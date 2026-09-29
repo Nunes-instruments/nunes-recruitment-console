@@ -1,0 +1,1932 @@
+﻿"use client";
+import { RoleReviewPage } from "@/components/role-review-page";
+import { ActivityPage } from "@/components/activity-page";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Activity, Bell, BriefcaseBusiness, CalendarDays, CheckCircle2, ChevronRight, Clock3, ExternalLink, Home as HomeIcon, Mail, MailCheck, MessageCircle, Radio, Search, Send, Settings as SettingsIcon, Settings2, ShieldCheck, Sparkles, Star, Users, LoaderCircle, Save, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+import { SettingsPage } from "@/components/settings-page";
+import { SentResponsesPage } from "@/components/sent-responses-page";
+import { RecruitmentMessagesPage } from "@/components/recruitment-messages-page";
+type ViewKey =
+  | "overview"
+  | "candidates"
+  | "sent-responses"
+  | "role-review"
+  | "message"
+  | "settings"
+  | "activity";
+
+const VIEW_KEYS: ViewKey[] = [
+  "overview",
+  "candidates",
+  "sent-responses",
+  "role-review",
+  "message",
+  "settings",
+  "activity",
+];
+
+const VIEW_META: Record<ViewKey, { title: string; subtitle: string }> = {
+  overview: {
+    title: "Recruitment Operations Hub",
+    subtitle: "Live recruitment monitoring, ranking and communication in one workspace.",
+  },
+  candidates: {
+    title: "Candidates",
+    subtitle: "Live applicant queue with verified contact and role status.",
+  },
+  "sent-responses": {
+    title: "Sent Responses",
+    subtitle: "Permanent delivery history for recruitment emails.",
+  },
+  "role-review": {
+    title: "Role Ranking & HR Review",
+    subtitle: "Role-based evidence ranking with HR-controlled interview approval.",
+  },
+  message: {
+    title: "Recruitment Messages",
+    subtitle: "Edit acknowledgement and interview email templates.",
+  },
+  settings: {
+    title: "Settings",
+    subtitle: "Company, sender authentication and local automation configuration.",
+  },
+  activity: {
+    title: "Activity",
+    subtitle: "Live monitoring, extraction, ranking and delivery events.",
+  },
+};
+
+type Applicant = {
+  id: number;
+  candidate_name?: string | null;
+  candidate_email?: string | null;
+  candidate_phone?: string | null;
+  job_title?: string | null;
+  indeed_status?: string | null;
+  profile_url?: string | null;
+  resume_path?: string | null;
+  extraction_status?: string | null;
+  application_verified?: number | boolean | null;
+  application_checked_at?: string | null;
+  decision_reason?: string | null;
+  send_status?: string | null;
+  send_error?: string | null;
+  sent_at?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+};
+
+type LogRow = {
+  id: number;
+  level: string;
+  message: string;
+  created_at: string;
+};
+
+type SentResponse = {
+  id: number;
+  recipient_email: string;
+  candidate_name?: string | null;
+  candidate_phone?: string | null;
+  job_title?: string | null;
+  subject?: string | null;
+  body?: string | null;
+  source_key?: string | null;
+  smtp_transport?: string | null;
+  message_id?: string | null;
+  sent_at: string;
+  history_source: string;
+  correction_required?: number;
+  correction_status?: string | null;
+  correction_subject?: string | null;
+  correction_body?: string | null;
+  correction_sent_at?: string | null;
+  correction_error?: string | null;
+};
+
+
+type Settings = {
+  company_name: string;
+  company_email: string;
+  indeed_google_account_email: string;
+  smtp_app_password_set: boolean;
+  indeed_start_url: string;
+  indeed_candidates_url: string;
+  automation_enabled: boolean;
+  monitoring_enabled: boolean;
+  auto_scan: boolean;
+  auto_send: boolean;
+  allow_candidate_page_email_fallback: boolean;
+  local_ai_enabled: boolean;
+  ollama_url: string;
+  ollama_model: string;
+  ranking_weights: {
+    required_skills: number;
+    relevant_experience: number;
+    responsibilities: number;
+    domain_experience: number;
+    education_certifications: number;
+    preferred_skills: number;
+  };
+  ranking_strong_threshold: number;
+  ranking_good_threshold: number;
+  ranking_moderate_threshold: number;
+  ranking_embedding_model: string;
+  ranking_embedding_status?: {
+    backend?: string;
+    error?: string | null;
+  };
+  subject_template: string;
+  body_template: string;
+  interview_subject_template: string;
+  interview_body_template: string;
+  hr_report_sender_email: string;
+  hr_report_recipient: string;
+  hr_report_smtp_app_password_set: boolean;
+  auto_send_role_reports: boolean;
+  daily_consolidated_report_enabled: boolean;
+  daily_report_time: string;
+  persistence?: {
+    saved_at?: string | null;
+    policy?: string;
+    scope?: string;
+    candidate_gmail_saved?: boolean;
+    hr_gmail_saved?: boolean;
+    indeed_reuses_chrome?: boolean;
+    indeed_expected_google_account?: string;
+    github_repository?: string;
+    github_branch?: string;
+    message?: string;
+  };
+};
+
+type Dashboard = {
+  version: string;
+  settings: Settings;
+  stats: {
+    total: number;
+    ready: number;
+    sent: number;
+    review: number;
+    skipped: number;
+    application_verified: number;
+    last_scan_at?: string | null;
+    last_new_count?: string | null;
+    last_visible_count?: string | null;
+    backlog_completed: boolean;
+    backlog_completed_at?: string | null;
+  };
+  chrome: {
+    ok: boolean;
+    chrome_connected?: boolean;
+    indeed_found?: boolean;
+    message?: string;
+    url?: string;
+    title?: string;
+    devtools_port?: number;
+    error?: string;
+  };
+  detected_candidates_page?: {
+    url: string;
+    title: string;
+  } | null;
+  detected_candidates_error?: string | null;
+  email_configured: boolean;
+  email_verified?: boolean;
+  email_last_error?: string | null;
+  email_transport?: string | null;
+  automation_enabled: boolean;
+  live_detection: {
+    healthy: boolean;
+    status: "LIVE" | "STALE" | "ERROR" | "STARTING" | "OFF" | string;
+    started_at?: string | null;
+    heartbeat_at?: string | null;
+    last_success_at?: string | null;
+    seconds_since_success?: number | null;
+    seconds_since_heartbeat?: number | null;
+    scan_mode?: string | null;
+    last_error?: string | null;
+    candidate_permission_status?: string | null;
+    candidate_permission?: string | null;
+    consecutive_failures: number;
+    last_found_links: number;
+    new_last_scan: number;
+    detected_today: number;
+    verified_today: number;
+    review_today: number;
+    sent_today: number;
+    skipped_today: number;
+    seen_today: number;
+    last_seen_today_applicant?: {
+      candidate_name?: string | null;
+      candidate_email?: string | null;
+      job_title?: string | null;
+      first_detected_at?: string | null;
+      last_seen_at?: string | null;
+      send_status?: string | null;
+      extraction_status?: string | null;
+    } | null;
+    local_date?: string | null;
+    last_new_applicant?: {
+      candidate_name?: string | null;
+      candidate_email?: string | null;
+      job_title?: string | null;
+      detected_at?: string | null;
+      send_status?: string | null;
+      extraction_status?: string | null;
+    } | null;
+  };
+  auto_connection?: {
+    phase?: string;
+    message?: string;
+    last_error?: string | null;
+    retry_in_seconds?: number;
+  };
+  applicants: Applicant[];
+  sent_responses: SentResponse[];
+  logs: LogRow[];
+  role_review_roles?: Array<{
+    job_title: string;
+    applicant_count: number;
+    analyzed_count: number;
+    waiting_count: number;
+    auto_shortlisted_count: number;
+    description_status?: string | null;
+    description_source?: string | null;
+  }>;
+  role_ranking_status?: {
+    total_roles: number;
+    roles_ready: number;
+    roles_waiting_description: number;
+    ranked_candidates: number;
+    waiting_candidates: number;
+    auto_shortlisted: number;
+    removed_candidates?: number;
+    shortlist_threshold: number;
+  };
+  role_ranking_error?: string | null;
+  core_recruitment?: {
+    service_live?: boolean;
+    communication_mode?: string;
+    chrome_connected?: boolean;
+    indeed_live?: boolean;
+    role_discovery_status?: string;
+    roles_found?: number;
+    candidate_permission_status?: string;
+    candidate_permission?: string;
+    candidate_permission_error?: string;
+    indeed_auth_status?: string | null;
+    indeed_auth_confirmed_at?: string | null;
+    duplicate_tabs_closed?: number;
+    ranking_running?: boolean;
+    message?: string;
+  };
+  recruitment_pipeline?: {
+    roles?: { total?: number; open?: number; paused?: number; flagged?: number; closed?: number };
+    notifications?: { queued?: number; sent?: number; failed?: number; waiting_login?: number };
+    hr_approved?: number;
+    report_sender?: string;
+    report_recipient?: string;
+    report_gmail_configured?: boolean;
+    report_gmail_verified?: boolean;
+    report_gmail_error?: string | null;
+    daily_report?: {
+      enabled?: boolean;
+      time?: string;
+      sender?: string;
+      recipient?: string;
+      last_queued_date?: string | null;
+      last_queued_at?: string | null;
+      last_sent_date?: string | null;
+      last_sent_at?: string | null;
+      last_error?: string | null;
+    };
+    communication_mode?: string;
+    duplicate_policy?: string;
+    interview_schedule?: { interview_date?: string | null; rule?: string | null };
+  };
+  backend_health?: {
+    schema?: { ready?: boolean; error?: string | null };
+    database?: {
+      ok?: boolean;
+      path?: string;
+      size_bytes?: number;
+      applications?: number;
+      sent_responses?: number;
+      logs?: number;
+      error?: string | null;
+    };
+    settings_saved_at?: string | null;
+    errors?: string[];
+  };
+};
+
+
+type OverviewRole = {
+  job_title: string;
+  applicant_count: number;
+  active_applicant_count?: number;
+  candidate_total_hint?: number;
+  candidate_new_hint?: number;
+  actual_new_count?: number;
+  analyzed_count: number;
+  waiting_count: number;
+  auto_shortlisted_count: number;
+  removed_count?: number;
+  acknowledged_count?: number;
+  ranked_count?: number;
+  hr_review_count?: number;
+  interview_count?: number;
+  completed_count?: number;
+  top_match_count?: number;
+  lifecycle_status?: string | null;
+  report_status?: string | null;
+  description_status?: string | null;
+};
+
+type OverviewReviewApplicant = Applicant & {
+  analysis_status?: string | null;
+  match_score?: number | null;
+  rank_position?: number | null;
+  auto_shortlisted?: number | boolean | null;
+  hr_flow?: {
+    hr_status?: string | null;
+    interview_date?: string | null;
+  } | null;
+};
+
+type OverviewRolePayload = {
+  role?: OverviewRole & {
+    lifecycle?: {
+      lifecycle_status?: string | null;
+      report_status?: string | null;
+    };
+  };
+  applicants?: OverviewReviewApplicant[];
+  active_applicants?: OverviewReviewApplicant[];
+  removed?: OverviewReviewApplicant[];
+  ranking?: {
+    ranked?: number;
+    waiting?: number;
+    auto_shortlisted?: number;
+    removed?: number;
+    threshold?: number;
+  };
+};
+
+const DEFAULT_SETTINGS: Settings = {
+  company_name: "Nunes",
+  company_email: "nuneslead@gmail.com",
+  indeed_google_account_email: "nuneslead@gmail.com",
+  smtp_app_password_set: false,
+  indeed_start_url: "",
+  indeed_candidates_url: "",
+  automation_enabled: true,
+  monitoring_enabled: true,
+  auto_scan: true,
+  auto_send: true,
+  allow_candidate_page_email_fallback: true,
+  local_ai_enabled: false,
+  ollama_url: "",
+  ollama_model: "",
+  ranking_weights: {
+    required_skills: 35,
+    relevant_experience: 25,
+    responsibilities: 20,
+    domain_experience: 10,
+    education_certifications: 5,
+    preferred_skills: 5,
+  },
+  ranking_strong_threshold: 85,
+  ranking_good_threshold: 70,
+  ranking_moderate_threshold: 50,
+  ranking_embedding_model: "BAAI/bge-small-en-v1.5",
+  ranking_embedding_status: { backend: "not-loaded", error: null },
+  subject_template: "Thank you for applying â€“ {job_title}",
+  body_template: "Dear {candidate_name},\n\nThank you for applying for the {job_title} position at {company_name}.\n\nWe have received your application and our team will review your profile. If your experience matches the role, we will contact you regarding the next steps.\n\nRegards,\n{company_name}",
+  interview_subject_template: "Interview invitation â€“ {job_title} â€“ {interview_date}",
+  interview_body_template: "Dear {candidate_name},\n\nOur HR team has reviewed your application for the {job_title} position at {company_name} and selected you for the interview stage.\n\nYour interview is scheduled for {interview_date}. Our HR team will contact you with the time and venue/meeting details.\n\nRegards,\n{company_name}",
+  hr_report_sender_email: "nunescbe@gmail.com",
+  hr_report_recipient: "nunescbe@gmail.com",
+  hr_report_smtp_app_password_set: false,
+  auto_send_role_reports: false,
+  daily_consolidated_report_enabled: true,
+  daily_report_time: "19:00",
+};
+
+const DEFAULT_DASHBOARD: Dashboard = {
+  version: "V11.11.4",
+  settings: DEFAULT_SETTINGS,
+  stats: {
+    total: 0,
+    ready: 0,
+    sent: 0,
+    review: 0,
+    skipped: 0,
+    application_verified: 0,
+    backlog_completed: false,
+  },
+  chrome: { ok: false, message: "Starting" },
+  detected_candidates_page: null,
+  detected_candidates_error: null,
+  email_configured: false,
+  email_verified: false,
+  automation_enabled: true,
+  live_detection: {
+    healthy: false,
+    status: "STARTING",
+    consecutive_failures: 0,
+    last_found_links: 0,
+    new_last_scan: 0,
+    detected_today: 0,
+    verified_today: 0,
+    review_today: 0,
+    sent_today: 0,
+    skipped_today: 0,
+    seen_today: 0,
+    last_seen_today_applicant: null,
+  },
+  auto_connection: { phase: "starting", message: "Starting" },
+  applicants: [],
+  sent_responses: [],
+  logs: [],
+  role_review_roles: [],
+  core_recruitment: {
+    service_live: true,
+    communication_mode: "EMAIL_ONLY",
+    chrome_connected: false,
+    indeed_live: false,
+    role_discovery_status: "STARTING",
+    roles_found: 0,
+    ranking_running: true,
+  },
+  role_ranking_status: {
+    total_roles: 0,
+    roles_ready: 0,
+    roles_waiting_description: 0,
+    ranked_candidates: 0,
+    waiting_candidates: 0,
+    auto_shortlisted: 0,
+    shortlist_threshold: 70,
+  },
+  role_ranking_error: null,
+  recruitment_pipeline: {
+    roles: { total: 0, open: 0, paused: 0, closed: 0 },
+    notifications: { queued: 0, sent: 0, failed: 0, waiting_login: 0 },
+    hr_approved: 0,
+    report_sender: "nunescbe@gmail.com",
+    report_recipient: "nunescbe@gmail.com",
+    report_gmail_configured: false,
+    report_gmail_verified: false,
+    },
+};
+
+const api = async (path: string, options?: RequestInit) => {
+  const response = await fetch(`/backend${path}`, {
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options?.headers || {}),
+    },
+    ...options,
+  });
+
+  const raw = await response.text();
+  let data: any = {};
+
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      const compact = raw.replace(/\s+/g, " ").trim();
+      throw new Error(
+        compact
+          ? `Backend returned HTTP ${response.status}: ${compact.slice(0, 220)}`
+          : `Backend returned HTTP ${response.status}`,
+      );
+    }
+  }
+
+  if (!response.ok) {
+    const backendMessage = String(data?.message || "").trim();
+    const backendDetail = String(data?.detail || "").trim();
+    throw new Error(
+      backendMessage === "Internal backend error" && backendDetail
+        ? `Backend: ${backendDetail}`
+        : backendMessage || backendDetail || `Request failed (${response.status})`,
+    );
+  }
+
+  return data;
+};
+
+const formatDate = (value?: string | null) => {
+  if (!value) return "â€”";
+  try {
+    return new Intl.DateTimeFormat("en-IN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
+};
+
+const liveAge = (seconds?: number | null) => {
+  if (seconds === null || seconds === undefined) return "Waiting for first check";
+  if (seconds <= 1) return "Checked just now";
+  if (seconds < 60) return `Checked ${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `Checked ${minutes}m ago`;
+};
+
+const relativeTime = (value?: string | null) => {
+  if (!value) return "Waiting";
+  const when = new Date(value).getTime();
+  if (!Number.isFinite(when)) return "Waiting";
+  const seconds = Math.max(0, Math.floor((Date.now() - when) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+};
+
+
+const isLocalToday = (value?: string | null) => {
+  if (!value) return false;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+
+  const now = new Date();
+
+  return (
+    date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  );
+};
+
+
+const mailErrorSummary = (value?: string | null) => {
+  const text = (value || "").trim();
+  if (!text) return "";
+
+  const lower = text.toLowerCase();
+
+  if (
+    lower.includes("app password")
+    || lower.includes("authentication")
+    || lower.includes("535")
+    || lower.includes("534")
+  ) {
+    return "Gmail App Password rejected";
+  }
+
+  if (
+    lower.includes("network")
+    || lower.includes("connect")
+    || lower.includes("timed out")
+    || lower.includes("timeout")
+  ) {
+    return "Gmail connection failed";
+  }
+
+  if (lower.includes("recipient")) {
+    return "Recipient rejected";
+  }
+
+  return text.length > 72 ? `${text.slice(0, 69)}â€¦` : text;
+};
+
+
+const reviewLabel = (value?: string | null) => {
+  const status = (value || "").toUpperCase();
+
+  const labels: Record<string, string> = {
+    VERIFIED_EMAIL_AND_ROLE: "Verified email + role",
+    VERIFIED_EMAIL_FOUND: "Verified",
+    NEEDS_REVIEW_APPLICATION: "Verifying application",
+    SKIPPED_NO_EMAIL_IN_RESUME: "Skipped Â· no email",
+    SKIPPED_AMBIGUOUS_EMAIL: "Skipped Â· ambiguous email",
+    NEEDS_REVIEW_ROLE: "Waiting for role",
+    NEEDS_REVIEW_JOB_TITLE: "Waiting for role",
+    NEEDS_REVIEW_NO_VERIFIED_EMAIL: "Waiting for verified email",
+    NEEDS_REVIEW_NO_EMAIL_IN_RESUME: "Waiting for verified email",
+    NEEDS_REVIEW_AMBIGUOUS_EMAIL: "Multiple emails â€” review",
+    NEEDS_REVIEW_NO_RESUME_FOUND: "Resume not available yet",
+    NEEDS_REVIEW_RESUME_NO_TEXT: "Resume text unavailable",
+  };
+
+  return labels[status] || (value || "Pending").replaceAll("_", " ");
+};
+
+
+const statusTone = (value?: string | null) => {
+  const v = (value || "").toUpperCase();
+  if (v.includes("SENT") || v.includes("VERIFIED")) return "success";
+  if (v.includes("READY")) return "info";
+  if (v.includes("REVIEW") || v.includes("FAILED")) return "warning";
+  return "neutral";
+};
+
+export default function Home() {
+  const [data, setData] = useState<Dashboard>(DEFAULT_DASHBOARD);
+  const [busy, setBusy] = useState<string>("");
+  const [notice, setNotice] = useState<{tone: "ok" | "warn" | "error"; text: string} | null>(null);
+  const [search, setSearch] = useState("");
+  const [candidateScope, setCandidateScope] = useState<"today" | "history">("today");
+  const [sentSearch, setSentSearch] = useState("");
+  const [activeView, setActiveView] = useState<ViewKey>("overview");
+  const [password, setPassword] = useState("");
+  const [hrReportPassword, setHrReportPassword] = useState("");
+  const [settingsDraft, setSettingsDraft] = useState<Settings>(DEFAULT_SETTINGS);
+  const [viewError, setViewError] = useState("");
+  const [headerSearch, setHeaderSearch] = useState("");
+  const [overviewRoles, setOverviewRoles] = useState<OverviewRole[]>([]);
+  const [overviewIndeedCounts, setOverviewIndeedCounts] = useState<{ all: number; new: number; roles: number }>({ all: 0, new: 0, roles: 0 });
+  const [overviewRoleDetails, setOverviewRoleDetails] = useState<Record<string, OverviewRolePayload>>({});
+  const [overviewApplicants, setOverviewApplicants] = useState<Applicant[]>([]);
+  const [clockNow, setClockNow] = useState(() => new Date());
+  const settingsDirtyRef = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const next = await api("/api/dashboard?lite=1");
+      setData((current) => ({
+        ...current,
+        ...next,
+        applicants: current.applicants,
+        sent_responses: current.sent_responses,
+        logs: current.logs,
+      }));
+      if (next.settings && !settingsDirtyRef.current) {
+        setSettingsDraft(next.settings);
+      }
+      setNotice((current) =>
+        current?.tone === "error" && current.text.includes("Unable to load")
+          ? null
+          : current
+      );
+
+      try {
+        localStorage.setItem(
+          "nunes-recruitment-dashboard-cache",
+          JSON.stringify({
+            version: next.version,
+            settings: next.settings,
+            stats: next.stats,
+            chrome: next.chrome,
+            detected_candidates_page: next.detected_candidates_page,
+            email_configured: next.email_configured,
+            email_verified: next.email_verified,
+            automation_enabled: next.automation_enabled,
+            live_detection: next.live_detection,
+            auto_connection: next.auto_connection,
+            role_ranking_status: next.role_ranking_status,
+          })
+        );
+      } catch {}
+    } catch (error) {
+      setNotice({
+        tone: "warn",
+        text: error instanceof Error
+          ? `Backend starting: ${error.message}`
+          : "Backend is starting",
+      });
+    }
+  }, []);
+
+  const loadViewData = useCallback(async (view: ViewKey) => {
+    try {
+      if (view === "candidates") {
+        const result = await api("/api/applicants?limit=500");
+        setData((current) => ({
+          ...current,
+          applicants: result.applicants || [],
+        }));
+      } else if (view === "sent-responses") {
+        const result = await api("/api/sent-responses?limit=1000");
+        setData((current) => ({
+          ...current,
+          sent_responses: result.sent_responses || [],
+        }));
+      } else if (view === "activity") {
+        const result = await api("/api/activity?limit=100");
+        setData((current) => ({
+          ...current,
+          logs: result.logs || [],
+        }));
+      }
+      setViewError("");
+    } catch (error) {
+      setViewError(
+        error instanceof Error
+          ? error.message
+          : "Unable to load this saved view",
+      );
+    }
+  }, []);
+
+  const loadRoleStatus = useCallback(async () => {
+    try {
+      const result = await api("/api/role-ranking-status");
+      setData((current) => ({
+        ...current,
+        role_ranking_status: result.role_ranking_status || current.role_ranking_status,
+      }));
+    } catch {}
+  }, []);
+
+
+  const loadOverviewExtras = useCallback(async () => {
+    try {
+      const result = await api("/api/recruitment/overview?roles=6&recent=8");
+      setOverviewRoles((result.roles || []) as OverviewRole[]);
+      setOverviewIndeedCounts({
+        all: Number(result.indeed_counts?.all || 0),
+        new: Number(result.indeed_counts?.new || 0),
+        roles: Number(result.indeed_counts?.roles || 0),
+      });
+      setOverviewApplicants((result.recent || []) as Applicant[]);
+      setOverviewRoleDetails({});
+      if (result.core_recruitment || result.role_discovery) {
+        setData((current) => ({
+          ...current,
+          core_recruitment:
+            result.core_recruitment
+            || current.core_recruitment,
+        }));
+      }
+    } catch {
+      // The lightweight dashboard continues rendering while this optional
+      // operations summary retries on the next interval.
+    }
+  }, []);
+
+  const loadCurrentSettings = useCallback(async () => {
+    try {
+      const result = await api("/api/settings");
+      if (result.settings && !settingsDirtyRef.current) {
+        setSettingsDraft(result.settings);
+      }
+      setData((current) => ({
+        ...current,
+        settings: result.settings || current.settings,
+        email_configured: Boolean(result.email_configured),
+        email_verified: Boolean(result.email_verified),
+        email_last_error: result.email_last_error ?? current.email_last_error,
+        email_transport: result.email_transport ?? current.email_transport,
+      }));
+      setViewError("");
+    } catch (error) {
+      setViewError(
+        error instanceof Error ? error.message : "Unable to load saved settings",
+      );
+    }
+  }, []);
+
+  const updateSetting = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    settingsDirtyRef.current = true;
+    setSettingsDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("nunes-recruitment-dashboard-cache");
+      if (raw) {
+        const cached = JSON.parse(raw);
+        setData((current) => ({ ...current, ...cached }));
+        if (cached.settings) {
+          setSettingsDraft(cached.settings);
+        }
+      }
+    } catch {}
+
+    load();
+    const timer = window.setInterval(load, 2000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    const first = window.setTimeout(loadRoleStatus, 800);
+    const timer = window.setInterval(loadRoleStatus, 10000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [loadRoleStatus]);
+
+
+  useEffect(() => {
+    if (activeView !== "overview") return;
+    const first = window.setTimeout(loadOverviewExtras, 450);
+    const timer = window.setInterval(loadOverviewExtras, 15000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
+  }, [activeView, loadOverviewExtras]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockNow(new Date()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    loadViewData(activeView);
+
+    if (!["candidates", "sent-responses", "activity"].includes(activeView)) {
+      return;
+    }
+
+    const interval = activeView === "candidates" ? 2000 : 5000;
+    const timer = window.setInterval(
+      () => loadViewData(activeView),
+      interval,
+    );
+    return () => window.clearInterval(timer);
+  }, [activeView, loadViewData]);
+
+  useEffect(() => {
+    if (activeView === "settings" || activeView === "message") {
+      loadCurrentSettings();
+    }
+  }, [activeView, loadCurrentSettings]);
+
+  useEffect(() => {
+    const syncViewFromLocation = () => {
+      const hash = window.location.hash.replace("#", "") as ViewKey;
+      if (VIEW_KEYS.includes(hash)) {
+        setActiveView(hash);
+      } else {
+        setActiveView("overview");
+      }
+    };
+
+    syncViewFromLocation();
+    window.addEventListener("hashchange", syncViewFromLocation);
+    window.addEventListener("popstate", syncViewFromLocation);
+
+    return () => {
+      window.removeEventListener("hashchange", syncViewFromLocation);
+      window.removeEventListener("popstate", syncViewFromLocation);
+    };
+  }, []);
+
+  const navigateTo = (view: ViewKey) => {
+    setActiveView(view);
+    window.history.pushState(null, "", `#${view}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    if (!settingsDirtyRef.current && data?.settings) {
+      setSettingsDraft(data.settings);
+    }
+  }, [data?.settings]);
+
+  const runAction = async (
+    key: string,
+    path: string,
+    successFallback: string,
+    body?: unknown,
+  ) => {
+    setBusy(key);
+    setNotice(null);
+    try {
+      const result = await api(path, {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      });
+      setNotice({
+        tone: "ok",
+        text: result.message || successFallback,
+      });
+      await load();
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Action failed",
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const saveSettings = async () => {
+    if (!settingsDraft) return;
+    setBusy("settings");
+    setNotice(null);
+
+    try {
+      const payload: Record<string, unknown> = {
+        ...settingsDraft,
+      };
+
+      if (password.trim()) {
+        payload.smtp_app_password = password.trim();
+      }
+      if (hrReportPassword.trim()) {
+        payload.hr_report_smtp_app_password = hrReportPassword.trim();
+      }
+
+      const result = await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      setPassword("");
+      setHrReportPassword("");
+      settingsDirtyRef.current = false;
+      setSettingsDraft(result.settings);
+      setData((current) => ({
+        ...current,
+        settings: result.settings || current.settings,
+        email_configured: Boolean(result.email_configured),
+        email_verified: Boolean(result.email_verified),
+      }));
+      setNotice({
+        tone: "ok",
+        text: result.message || "Settings saved.",
+      });
+      setViewError("");
+      await load();
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Unable to save settings",
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const filteredApplicants = useMemo(() => {
+    const rows = data?.applicants || [];
+    const q = search.trim().toLowerCase();
+
+    return rows.filter((row) => {
+      if (
+        candidateScope === "today"
+        && !isLocalToday(row.last_seen_at)
+      ) {
+        return false;
+      }
+
+      if (!q) return true;
+
+      return [
+        row.candidate_name,
+        row.candidate_email,
+        row.candidate_phone,
+        row.job_title,
+        row.extraction_status,
+        row.send_status,
+        row.decision_reason,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [data?.applicants, search, candidateScope]);
+
+  const filteredSentResponses = useMemo(() => {
+    const rows = data?.sent_responses || [];
+    const q = sentSearch.trim().toLowerCase();
+
+    if (!q) return rows;
+
+    return rows.filter((row) =>
+      [
+        row.candidate_name,
+        row.recipient_email,
+        row.candidate_phone,
+        row.job_title,
+        row.subject,
+        row.body,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [data?.sent_responses, sentSearch]);
+
+  const sentResponseSummary = useMemo(() => {
+    const rows = data?.sent_responses || [];
+    const uniqueRecipients = new Set(
+      rows
+        .map((row) => (row.recipient_email || "").trim().toLowerCase())
+        .filter(Boolean)
+    ).size;
+    const corrections = rows.filter(
+      (row) => row.correction_status === "SENT" || Boolean(row.correction_sent_at)
+    ).length;
+    const latest = rows.reduce<string | null>((current, row) => {
+      if (!row.sent_at) return current;
+      if (!current) return row.sent_at;
+      return new Date(row.sent_at).getTime() > new Date(current).getTime()
+        ? row.sent_at
+        : current;
+    }, null);
+
+    return {
+      total: rows.length,
+      uniqueRecipients,
+      corrections,
+      latest,
+    };
+  }, [data?.sent_responses]);
+
+  const chromeConnected = Boolean(data.chrome?.ok);
+  const candidatePermissionMissing =
+    String(
+      data.live_detection?.candidate_permission_status
+      || data.core_recruitment?.candidate_permission_status
+      || "",
+    ).toUpperCase() === "MISSING"
+    || data.auto_connection?.phase === "permission_required";
+  const candidatesReady = Boolean(data.detected_candidates_page);
+  const monitoringActive =
+    settingsDraft.automation_enabled &&
+    settingsDraft.monitoring_enabled &&
+    settingsDraft.auto_scan &&
+    Boolean(settingsDraft.indeed_candidates_url);
+
+  const rolePipelineRows = useMemo(() => {
+    return overviewRoles.slice(0, 6).map((role) => {
+      const databaseTotal = Number(role.active_applicant_count ?? role.applicant_count ?? 0);
+      const indeedTotal = Number(role.candidate_total_hint || 0);
+      const total = Math.max(databaseTotal, indeedTotal);
+      const newCount = Number(role.candidate_new_hint ?? role.actual_new_count ?? 0);
+      return {
+        ...role,
+        displayTotal: total,
+        newCount,
+        acknowledged: Number(role.acknowledged_count || 0),
+        ranked: Number(role.ranked_count ?? role.analyzed_count ?? 0),
+        hrReview: Number(role.hr_review_count || 0),
+        interview: Number(role.interview_count || 0),
+        completed: Number(role.completed_count ?? role.removed_count ?? 0),
+      };
+    });
+  }, [overviewRoles]);
+
+  const indeedAllApplicants = Math.max(
+    Number(overviewIndeedCounts.all || 0),
+    Number(data.stats.total || 0),
+  );
+  const indeedNewApplicants = Number(
+    overviewIndeedCounts.new
+    || data.live_detection?.detected_today
+    || 0
+  );
+
+  const roleHrReviewTotal = useMemo(
+    () => rolePipelineRows.reduce((sum, role) => sum + role.hrReview, 0),
+    [rolePipelineRows],
+  );
+
+  const completedCandidates = Number(
+    data.role_ranking_status?.removed_candidates
+      ?? rolePipelineRows.reduce((sum, role) => sum + role.completed, 0),
+  );
+  const interviewCandidates = Number(data.recruitment_pipeline?.hr_approved || 0);
+  const rankedCandidates = Number(data.role_ranking_status?.ranked_candidates || 0);
+  const rankingTotal = Math.max(
+    0,
+    rankedCandidates + Number(data.role_ranking_status?.waiting_candidates || 0),
+  );
+  const rankingPercent = rankingTotal > 0
+    ? Math.round((rankedCandidates / rankingTotal) * 100)
+    : 0;
+  const pipelineBase = Math.max(Number(data.stats.total || 0), 1);
+  const stagePercent = (value: number) => Math.max(0, Math.min(100, Math.round((value / pipelineBase) * 100)));
+  const roleStagePercent = (value: number, total: number) => {
+    const base = Math.max(Number(total || 0), 1);
+    return Math.max(0, Math.min(100, Math.round((Number(value || 0) / base) * 100)));
+  };
+
+  const recentProcessing = useMemo(() => {
+    return overviewApplicants
+      .map((row) => row as OverviewReviewApplicant)
+      .sort((a, b) => {
+        const at = new Date(a.first_seen_at || 0).getTime();
+        const bt = new Date(b.first_seen_at || 0).getTime();
+        return bt - at;
+      })
+      .slice(0, 5);
+  }, [overviewApplicants]);
+
+  const openRoleReview = (jobTitle?: string) => {
+    if (jobTitle) {
+      try {
+        sessionStorage.setItem("nunes-selected-role", jobTitle);
+      } catch {}
+    }
+    navigateTo("role-review");
+  };
+
+  const submitHeaderSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const query = headerSearch.trim();
+    if (!query) return;
+    setSearch(query);
+    setCandidateScope("history");
+    navigateTo("candidates");
+  };
+
+  return (
+    <main className="appShell topNavShell">
+      <header className="globalTopNav">
+        <div className="topBrandGroup">
+          <Button type="button" variant="ghost" className="topBrand" onClick={() => navigateTo("overview")}>
+            <span className="topBrandMark">N</span>
+            <span>
+              <strong>Nunes</strong>
+              <small>Recruitment Operations</small>
+            </span>
+          </Button>
+          <span className="topAutomationState running alwaysOnState">
+            <i />
+            24/7 Live
+          </span>
+        </div>
+
+        <nav className="topNavLinks" aria-label="Recruitment console">
+          <Button type="button" variant="ghost" size="sm" className={activeView === "overview" ? "active" : ""} onClick={() => navigateTo("overview")}>
+            <HomeIcon /> <span>Overview</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "candidates" ? "active" : ""} onClick={() => navigateTo("candidates")}>
+            <Users /> <span>Candidates</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "role-review" ? "active" : ""} onClick={() => openRoleReview()}>
+            <BriefcaseBusiness /> <span>Roles</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "sent-responses" ? "active" : ""} onClick={() => navigateTo("sent-responses")}>
+            <Send /> <span>Sent</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "message" ? "active" : ""} onClick={() => navigateTo("message")}>
+            <MessageCircle /> <span>Messaging</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "activity" ? "active" : ""} onClick={() => navigateTo("activity")}>
+            <Activity /> <span>Activity</span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className={activeView === "settings" ? "active" : ""} onClick={() => navigateTo("settings")}>
+            <SettingsIcon /> <span>Settings</span>
+          </Button>
+        </nav>
+
+        <div className="topNavRight">
+          <form className="topGlobalSearch" onSubmit={submitHeaderSearch}>
+            <Search />
+            <Input
+              value={headerSearch}
+              onChange={(event) => setHeaderSearch(event.target.value)}
+              placeholder="Search candidates, roles, or keywordsâ€¦"
+              aria-label="Search candidates"
+            />
+          </form>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={`topNoticeBell ${(data.backend_health?.errors || []).length > 0 || !data.email_verified ? "attention" : ""}`}
+            aria-label="System attention status"
+            onClick={() => navigateTo((data.backend_health?.errors || []).length > 0 ? "activity" : "settings")}
+          >
+            <Bell />
+            {((data.backend_health?.errors || []).length > 0 || !data.email_verified) && <span />}
+          </Button>
+
+          
+
+          <div className="topUserBadge" title={`Local workspace ${data.version}`}>N</div>
+        </div>
+      </header>
+
+      <section className="content operations  Content">
+        {!["message", "activity", "settings", "sent-responses", "role-review"].includes(activeView) && (
+          <header className="pageHero operationsHero">
+            <div>
+              <p className="eyebrow">Recruitment Operations</p>
+
+              <h1>
+                {activeView === "overview"
+                  ? "Recruitment Operations Hub"
+                  : VIEW_META[activeView].title}
+              </h1>
+
+              <p className="subhead">
+                {activeView === "overview"
+                  ? "Automate, track and manage your hiring workflow from new applicants to completed hires."
+                  : VIEW_META[activeView].subtitle}
+              </p>
+            </div>
+
+            {activeView === "overview" && (
+              <div className="heroClock">
+                <span>
+                  {clockNow.toLocaleDateString("en-IN", {
+                    weekday: "short",
+                    day: "2-digit",
+                    month: "short",
+                    year: "numeric",
+                  })}
+                </span>
+
+                <strong>
+                  {clockNow.toLocaleTimeString("en-IN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </strong>
+
+                <small className="running">
+                  <i /> Core recruitment live
+                </small>
+              </div>
+            )}
+          </header>
+        )}
+
+        {viewError && activeView !== "overview" && activeView !== "settings" && (
+          <div className="notice error">
+            <span>{viewError}</span>
+          </div>
+        )}
+
+        {activeView === "overview" && (
+          <div className="operationsHub">
+            {(data.backend_health?.errors || []).length > 0 && (
+              <div className="opsCompactNotice warning">
+                <span>
+                  Backend recovered with {data.backend_health?.errors?.length || 0} subsystem warning(s). Live retry is continuing.
+                </span>
+                <Button type="button" variant="outline" size="sm" onClick={() => navigateTo("activity")}>View activity</Button>
+              </div>
+            )}
+
+            {notice && (
+              <div className={`opsCompactNotice ${notice.tone}`}>
+                <span>{notice.text}</span>
+                <Button type="button" variant="ghost" size="iconSm" aria-label="Dismiss notice" onClick={() => setNotice(null)}><X /></Button>
+              </div>
+            )}
+
+            <section className="opsPanel hiringPipelinePanel">
+              <div className="opsPanelHeader">
+                <div className="opsPanelTitle">
+                  <span className="opsPanelIcon blue"><BriefcaseBusiness /></span>
+                  <div>
+                    <h2>Hiring Pipeline</h2>
+                    <p>Live recruitment pipeline</p>
+                  </div>
+                </div>
+                <span className="liveDataPill"><Radio /> Live data</span>
+              </div>
+
+              <div className="pipelineStageGrid">
+                <article className="pipelineStage stageBlue">
+                  <div className="pipelineStageTop">
+                    <Users />
+                    <span className="pipelineBadge positive">{indeedNewApplicants} new</span>
+                  </div>
+                  <strong>{indeedAllApplicants}</strong>
+                  <h3>All Applicants</h3>
+                  <p>{indeedNewApplicants} currently New on Indeed</p>
+                  <div className="stageProgress"><span style={{ width: "100%" }} /></div>
+                </article>
+                <ChevronRight className="pipelineArrow" />
+
+                <article className="pipelineStage stageGreen">
+                  <div className="pipelineStageTop">
+                    <Mail />
+                    <span className="pipelineBadge">{stagePercent(Number(data.stats.sent || 0))}%</span>
+                  </div>
+                  <strong>{data.stats.sent || 0}</strong>
+                  <h3>Acknowledged</h3>
+                  <p>Thank-you email sent</p>
+                  <div className="stageProgress"><span style={{ width: `${stagePercent(Number(data.stats.sent || 0))}%` }} /></div>
+                </article>
+                <ChevronRight className="pipelineArrow" />
+
+                <article className="pipelineStage stageAmber">
+                  <div className="pipelineStageTop">
+                    <Star />
+                    <span className="pipelineBadge">{stagePercent(rankedCandidates)}%</span>
+                  </div>
+                  <strong>{rankedCandidates}</strong>
+                  <h3>Ranked</h3>
+                  <p>Resume/JD evidence ranked</p>
+                  <div className="stageProgress"><span style={{ width: `${stagePercent(rankedCandidates)}%` }} /></div>
+                </article>
+                <ChevronRight className="pipelineArrow" />
+
+                <article className="pipelineStage stagePurple">
+                  <div className="pipelineStageTop">
+                    <ShieldCheck />
+                    <span className="pipelineBadge">{stagePercent(roleHrReviewTotal)}%</span>
+                  </div>
+                  <strong>{roleHrReviewTotal}</strong>
+                  <h3>HR Review</h3>
+                  <p>Ranked and waiting for HR</p>
+                  <div className="stageProgress"><span style={{ width: `${stagePercent(roleHrReviewTotal)}%` }} /></div>
+                </article>
+                <ChevronRight className="pipelineArrow" />
+
+                <article className="pipelineStage stageRed">
+                  <div className="pipelineStageTop">
+                    <CalendarDays />
+                    <span className="pipelineBadge">{stagePercent(interviewCandidates)}%</span>
+                  </div>
+                  <strong>{interviewCandidates}</strong>
+                  <h3>Interview</h3>
+                  <p>Approved / outreach queued</p>
+                  <div className="stageProgress"><span style={{ width: `${stagePercent(interviewCandidates)}%` }} /></div>
+                </article>
+                <ChevronRight className="pipelineArrow" />
+
+                <article className="pipelineStage stageCompleted">
+                  <div className="pipelineStageTop">
+                    <CheckCircle2 />
+                    <span className="pipelineBadge">{stagePercent(completedCandidates)}%</span>
+                  </div>
+                  <strong>{completedCandidates}</strong>
+                  <h3>Completed</h3>
+                  <p>Selected / hired / closed</p>
+                  <div className="stageProgress"><span style={{ width: `${stagePercent(completedCandidates)}%` }} /></div>
+                </article>
+              </div>
+            </section>
+
+            <section className="opsPanel activeRolesPanel">
+              <div className="opsPanelHeader">
+                <div className="opsPanelTitle">
+                  <span className="opsPanelIcon teal"><BriefcaseBusiness /></span>
+                  <div>
+                    <h2>Current Indeed Roles</h2>
+                    <p>Live roles from Indeed Â· Open, Paused and Flagged</p>
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => openRoleReview()}>
+                  View all roles
+                  <ChevronRight />
+                </Button>
+              </div>
+
+              <div className="activeRoleRows">
+                {rolePipelineRows.length === 0 ? (
+                  <div className="opsEmptyState">
+                    <BriefcaseBusiness />
+                    <div>
+                      <strong>Loading current Indeed roles from the single Jobs tab</strong>
+                      <span>One live Jobs tab is reused continuously. Open, Paused and Flagged roles are included; Closed, Expired and Filled roles are excluded.</span>
+                    </div>
+                  </div>
+                ) : (
+                  rolePipelineRows.map((role) => {
+                    const lifecycle = (role.lifecycle_status || "UNKNOWN").toUpperCase();
+                    const total = Number(role.displayTotal || role.applicant_count || 0);
+                    return (
+                      <article className="activeRoleRow" key={role.job_title}>
+                        <div className="roleIdentityBlock">
+                          <strong>{role.job_title}</strong>
+                          <div className="roleMetaChips">
+                            <span>Indeed</span>
+                            <span className={lifecycle === "OPEN" ? "active" : lifecycle === "CLOSED" ? "closed" : "paused"}>
+                              {lifecycle}
+                            </span>
+                            <span>{total} all</span>
+                            <span>{role.newCount} new</span>
+                          </div>
+                          {(role.report_status && role.report_status !== "IDLE") ? (
+                            <small className="roleOperationalNote">
+                              {(role.report_status || "").replaceAll("_", " ")}
+                            </small>
+                          ) : null}
+                        </div>
+
+                        <div className="roleStageTrack">
+                          <div className="roleMiniStage miniBlue">
+                            <strong>{role.newCount}</strong><span>New</span>
+                            <i><b style={{ width: `${roleStagePercent(role.newCount, total)}%` }} /></i>
+                          </div>
+                          <ChevronRight />
+                          <div className="roleMiniStage miniGreen">
+                            <strong>{role.acknowledged}</strong><span>Acknowledged</span>
+                            <i><b style={{ width: `${roleStagePercent(role.acknowledged, total)}%` }} /></i>
+                          </div>
+                          <ChevronRight />
+                          <div className="roleMiniStage miniAmber">
+                            <strong>{role.ranked}</strong><span>Ranked</span>
+                            <i><b style={{ width: `${roleStagePercent(role.ranked, total)}%` }} /></i>
+                          </div>
+                          <ChevronRight />
+                          <div className="roleMiniStage miniPurple">
+                            <strong>{role.hrReview}</strong><span>HR Review</span>
+                            <i><b style={{ width: `${roleStagePercent(role.hrReview, total)}%` }} /></i>
+                          </div>
+                          <ChevronRight />
+                          <div className="roleMiniStage miniRed">
+                            <strong>{role.interview}</strong><span>Interview</span>
+                            <i><b style={{ width: `${roleStagePercent(role.interview, total)}%` }} /></i>
+                          </div>
+                          <ChevronRight />
+                          <div className="roleMiniStage miniDone">
+                            <strong>{role.completed}</strong><span>Completed</span>
+                            <i><b style={{ width: `${roleStagePercent(role.completed, total)}%` }} /></i>
+                          </div>
+                        </div>
+
+                        <div className="roleTotalBlock">
+                          <strong>{total}</strong>
+                          <span>Total applicants</span>
+                          <Button type="button" variant="outline" size="sm" onClick={() => openRoleReview(role.job_title)}>
+                            View role <ChevronRight />
+                          </Button>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+
+            <div className="opsBottomGrid">
+              <section className="opsPanel rankingStatusPanel">
+                <div className="opsPanelHeader compact">
+                  <div className="opsPanelTitle">
+                    <span className="opsPanelIcon purple"><Sparkles /></span>
+                    <div>
+                      <h2>AI Ranking Status</h2>
+                      <p>RAG + keyword ranking</p>
+                    </div>
+                  </div>
+                  <span className={`servicePill ${(data.role_ranking_status?.waiting_candidates || 0) > 0 ? "working" : "ready"}`}>
+                    <i /> {(data.role_ranking_status?.waiting_candidates || 0) > 0 ? "Processing" : "Running"}
+                  </span>
+                </div>
+
+                <div className="rankingStatusBody">
+                  <div
+                    className="rankingDonut"
+                    style={{ background: `conic-gradient(#16b89a 0 ${rankingPercent}%, #e7eef8 ${rankingPercent}% 100%)` }}
+                  >
+                    <div><strong>{rankingPercent}%</strong><span>Complete</span></div>
+                  </div>
+                  <div className="rankingStatusList">
+                    <div><i className="blue" /><strong>{data.stats.total || 0}</strong><span>Total candidates detected</span></div>
+                    <div><i className="green" /><strong>{data.stats.sent || 0}</strong><span>Acknowledged via email</span></div>
+                    <div><i className="amber" /><strong>{rankedCandidates}</strong><span>Resume ranking complete</span></div>
+                    <div><i className="purple" /><strong>{data.role_ranking_status?.waiting_candidates || 0}</strong><span>Processing / waiting</span></div>
+                    <div><i className="gray" /><strong>{data.role_ranking_status?.roles_waiting_description || 0}</strong><span>Roles waiting description</span></div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="opsPanel liveIndeedPanel">
+                <div className="opsPanelHeader compact">
+                  <div className="opsPanelTitle">
+                    <span className="opsPanelIcon blue"><Radio /></span>
+                    <div>
+                      <h2>Live Indeed Detection</h2>
+                      <p>Real-time Indeed monitoring</p>
+                    </div>
+                  </div>
+                  <span className={`servicePill ${data.live_detection?.healthy ? "ready" : candidatePermissionMissing ? "warning" : "working"}`}>
+                    <i /> {data.live_detection?.healthy ? "Connected" : candidatePermissionMissing ? "Permission needed" : "Recovering"}
+                  </span>
+                </div>
+
+                <div className="liveDetectionMain">
+                  <span>Last detected</span>
+                  <strong>{data.live_detection?.last_success_at ? relativeTime(data.live_detection.last_success_at) : "Waiting for first check"}</strong>
+                  <small>{candidatePermissionMissing ? "Indeed is signed in and current roles stay live. Candidate access is waiting only for Manage candidates permission." : data.live_detection?.healthy ? "New applicants found automatically" : data.live_detection?.last_error || "Automatic reconnect is running"}</small>
+                  <Button type="button" variant="outline" size="sm" loading={busy === "open-indeed"} loadingText="Openingâ€¦" onClick={() => runAction("open-indeed", "/api/open-indeed", "Indeed opened in Chrome.")}>View on Indeed <ExternalLink /></Button>
+                </div>
+
+                {candidatePermissionMissing && (
+                  <div className="chromeAttentionRow permissionBlockedRow">
+                    <div>
+                      <strong>Indeed Manage candidates permission is missing</strong>
+                      <span>
+                        The signed-in Employer account can open Manage Jobs, but Indeed is blocking Manage candidates for Nunes Instruments. Required permission: {data.live_detection?.candidate_permission || data.core_recruitment?.candidate_permission || "Hosted_Candidate"}. Current roles will still load; applicant monitoring, resume ranking and acknowledgement emails will wait safely.
+                      </span>
+                    </div>
+                    <div className="chromeActionGroup">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={busy === "indeed-safe-login"}
+                        loadingText="Openingâ€¦"
+                        onClick={() =>
+                          runAction(
+                            "indeed-safe-login",
+                            "/api/indeed/safe-login",
+                            "Safe Indeed login opened. Sign out of the current Indeed account if needed, then use an Employer account that has Manage candidates access. After confirming access, close Recruitment Chrome completely."
+                          )
+                        }
+                      >
+                        Switch Indeed account
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={busy === "retry-candidate-access"}
+                        loadingText="Checkingâ€¦"
+                        onClick={() =>
+                          runAction(
+                            "retry-candidate-access",
+                            "/api/indeed/retry-candidate-access",
+                            "Manage candidates access checked once. The Jobs tab remains open."
+                          )
+                        }
+                      >
+                        Retry candidate access
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {!chromeConnected && (
+                  <div className="chromeAttentionRow">
+                    <div>
+                      <strong>Chrome not connected</strong>
+                      <span>Open / Reuse Recruitment Chrome for live monitoring. If Google blocks sign-in, use Safe Google Login once with nuneslead@gmail.com.</span>
+                    </div>
+                    <div className="chromeActionGroup">
+                      <Button
+                        type="button"
+                        variant="warning"
+                        size="sm"
+                        loading={busy === "connect"}
+                        loadingText="Connectingâ€¦"
+                        onClick={() =>
+                          runAction(
+                            "connect",
+                            "/api/connect",
+                            "Recruitment Chrome is starting directly on Indeed Candidates."
+                          )
+                        }
+                      >
+                        Open / Reuse Recruitment Chrome
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={busy === "indeed-safe-login"}
+                        loadingText="Opening safe loginâ€¦"
+                        onClick={() =>
+                          runAction(
+                            "indeed-safe-login",
+                            "/api/indeed/safe-login",
+                            "Safe Indeed login opened. Complete Google/Indeed sign-in, then close that Recruitment Chrome window completely. Live monitoring will restart automatically."
+                          )
+                        }
+                      >
+                        Safe Google Login Â· nuneslead@gmail.com
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+
+                {(data.auto_connection?.phase === "waiting_for_sign_in" ||
+                  data.auto_connection?.phase === "safe_sign_in") && (
+                  <div className="chromeAttentionRow safeLoginRow">
+                    <div>
+                      <strong>
+                        {data.auto_connection?.phase === "safe_sign_in"
+                          ? "Complete the one-time Indeed sign-in"
+                          : "Indeed sign-in required"}
+                      </strong>
+                      <span>
+                        {data.auto_connection?.phase === "safe_sign_in"
+                          ? "Sign in to Indeed/Google in the separate Recruitment Chrome window, then close that window completely."
+                          : "If Continue with Google says this browser is not secure, use Safe Google Login and choose nuneslead@gmail.com. Debugging is disabled during that one-time sign-in."}
+                      </span>
+                    </div>
+                    {data.auto_connection?.phase !== "safe_sign_in" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        loading={busy === "indeed-safe-login"}
+                        loadingText="Opening safe loginâ€¦"
+                        onClick={() =>
+                          runAction(
+                            "indeed-safe-login",
+                            "/api/indeed/safe-login",
+                            "Safe Indeed login opened. Sign in once, then close that Recruitment Chrome window."
+                          )
+                        }
+                      >
+                        Safe Google Login
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <div className="liveMiniMetrics">
+                  <div><span>New seen today</span><strong>{data.live_detection?.seen_today || 0}</strong></div>
+                  <div><span>Added today</span><strong>{data.live_detection?.detected_today || 0}</strong></div>
+                  <div><span>Skipped</span><strong>{data.live_detection?.skipped_today || 0}</strong></div>
+                  <div><span>Errors</span><strong className={!candidatePermissionMissing && (data.live_detection?.consecutive_failures || 0) > 0 ? "danger" : ""}>{candidatePermissionMissing ? 0 : (data.live_detection?.consecutive_failures || 0)}</strong></div>
+                </div>
+              </section>
+
+              <section className="opsPanel candidateProcessingPanel">
+                <div className="opsPanelHeader compact">
+                  <div className="opsPanelTitle">
+                    <span className="opsPanelIcon blue"><Settings2 /></span>
+                    <div>
+                      <h2>Candidate Processing</h2>
+                      <p>Verified email delivery Â· ranking runs separately</p>
+                    </div>
+                  </div>
+                  <span className={`servicePill ${candidatePermissionMissing ? "warning" : "ready"}`}><i /> {candidatePermissionMissing ? "Waiting for access" : "Processing"}</span>
+                </div>
+
+                <div className="processingList">
+                  {recentProcessing.length === 0 ? (
+                    <div className="opsEmptyState compact">
+                      <Users />
+                      <span>{candidatePermissionMissing ? "Candidate processing is paused safely until this Indeed account has Manage candidates access." : "Waiting for the next live applicant."}</span>
+                    </div>
+                  ) : (
+                    recentProcessing.map((row) => {
+                      const approved = (row.hr_flow?.hr_status || "").toUpperCase() === "APPROVED";
+                      const ranked = (row.analysis_status || "").toUpperCase() === "READY";
+                      const sent = (row.send_status || "").toUpperCase() === "SENT";
+                      const statusText = approved
+                        ? `HR approved${row.hr_flow?.interview_date ? ` Â· ${row.hr_flow.interview_date}` : ""}`
+                        : ranked
+                          ? `Resume ranking complete${row.rank_position ? ` Â· Rank #${row.rank_position}` : ""}${row.match_score !== null && row.match_score !== undefined ? ` Â· ${Number(row.match_score).toFixed(0)}%` : ""}`
+                          : sent
+                            ? "Acknowledgement sent Â· ranking pending"
+                            : reviewLabel(row.extraction_status);
+                      return (
+                        <div className="processingRow" key={row.id}>
+                          <span className="processingAvatar">{(row.candidate_name || "C").slice(0, 2).toUpperCase()}</span>
+                          <div>
+                            <strong>{row.candidate_name || "Candidate"}</strong>
+                            <span>{statusText}</span>
+                          </div>
+                          <small>{relativeTime(row.first_seen_at)}</small>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
+        )}
+
+        {activeView === "candidates" && (
+        <section className="panel candidatePanel" id="candidates">
+          <div className="panelHeader">
+            <div>
+              <p className="sectionLabel">Candidate Inbox</p>
+              <h2>Applicants</h2>
+              <p className="tableSubhead">
+                Live Today shows applicants actually seen in today's Indeed scan. History keeps the older records separately.
+              </p>
+            </div>
+            <div className="panelTools">
+              <div className="candidateScopeToggle" role="group" aria-label="Candidate scope">
+                <button
+                  type="button"
+                  className={candidateScope === "today" ? "active" : ""}
+                  onClick={() => setCandidateScope("today")}
+                >
+                  Live Today
+                  <span>{data.live_detection?.seen_today || 0}</span>
+                </button>
+                <button
+                  type="button"
+                  className={candidateScope === "history" ? "active" : ""}
+                  onClick={() => setCandidateScope("history")}
+                >
+                  History
+                  <span>{data.applicants.length}</span>
+                </button>
+              </div>
+              <input
+                className="searchInput"
+                placeholder="Search candidates, jobs, emailâ€¦"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <span className="rowCount">{filteredApplicants.length} records</span>
+            </div>
+          </div>
+
+          <div className="tableWrap candidateTableScroll">
+            <table className="dataTable">
+              <thead>
+                <tr>
+                  <th>Candidate</th>
+                  <th>Position</th>
+                  <th>Contact</th>
+                  <th>Application</th>
+                  <th>Mail</th>
+                  <th>Reason</th>
+                  <th>First detected</th>
+                  <th>Last seen</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {filteredApplicants.length === 0 ? (
+                  <tr>
+                    <td colSpan={9}>
+                      <div className="emptyState">
+                        <strong>
+                          {candidateScope === "today"
+                            ? "Waiting for today's live Indeed scan"
+                            : "No candidate records yet"}
+                        </strong>
+                        <span>
+                          {candidateScope === "today"
+                            ? "After a successful live scan, applicants seen today appear here automatically."
+                            : "Candidate records will appear here after the Indeed Candidates page is active."}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredApplicants.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <div className="candidateCell">
+                          <div className="avatar">
+                            {(row.candidate_name || "C").slice(0, 1).toUpperCase()}
+                          </div>
+                          <div>
+                            <strong>{row.candidate_name || "Candidate"}</strong>
+                            <span>{row.candidate_phone || "No phone available"}</span>
+                            {row.indeed_status && (
+                              <span className="indeedWorkflowStatus">
+                                Indeed: {row.indeed_status}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        {row.job_title &&
+                        !["the position", "position"].includes(
+                          row.job_title.toLowerCase()
+                        ) ? (
+                          row.job_title
+                        ) : (
+                          <span className="pendingValue">Detecting roleâ€¦</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="contactCell">
+                          {row.candidate_email ? (
+                            <span>{row.candidate_email}</span>
+                          ) : (
+                            <span className="pendingValue">
+                              Detecting verified emailâ€¦
+                            </span>
+                          )}
+                          {row.resume_path && (
+                            <a
+                              href={`/backend/resume/${row.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Resume
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span
+                          className={`badge ${
+                            row.application_verified ? "success" : "warning"
+                          }`}
+                        >
+                          {row.application_verified
+                            ? "APPLICATION VERIFIED"
+                            : "VERIFYING"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="communicationCell">
+                          <span
+                            className={`badge ${statusTone(row.send_status)}`}
+                            title={row.send_error || undefined}
+                          >
+                            {(row.send_status || "Pending").replaceAll("_", " ")}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="reasonCell">
+                        <span title={row.decision_reason || row.send_error || undefined}>
+                          {row.decision_reason
+                            || row.send_error
+                            || reviewLabel(row.extraction_status)}
+                        </span>
+                      </td>
+                      <td>{formatDate(row.first_seen_at)}</td>
+                      <td>
+                        <span className={isLocalToday(row.last_seen_at) ? "liveSeenToday" : ""}>
+                          {formatDate(row.last_seen_at)}
+                        </span>
+                      </td>
+                      <td className="actionsCell">
+                        {row.profile_url && (
+                          <Button asChild variant="ghost" size="sm">
+                            <a
+                              href={row.profile_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink />
+                              Open
+                            </a>
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        )}
+
+        {activeView === "sent-responses" && (
+          <SentResponsesPage
+            rows={filteredSentResponses}
+            summary={sentResponseSummary}
+            search={sentSearch}
+            onSearchChange={setSentSearch}
+          />
+        )}
+
+        {activeView === "role-review" && (
+          <RoleReviewPage />
+        )}
+
+        {activeView === "settings" && (
+          <SettingsPage
+            settings={settingsDraft}
+            data={data}
+            busy={busy}
+            password={password}
+            hrReportPassword={hrReportPassword}
+            viewError={viewError}
+            onPasswordChange={(value) => {
+              setPassword(value);
+              settingsDirtyRef.current = true;
+            }}
+            onHrReportPasswordChange={(value) => {
+              setHrReportPassword(value);
+              settingsDirtyRef.current = true;
+            }}
+            onUpdateSetting={updateSetting}
+            onSave={saveSettings}
+            onRunAction={runAction}
+          />
+        )}
+        {activeView === "message" && (
+          <RecruitmentMessagesPage
+            settings={settingsDraft}
+            busy={busy}
+            onUpdateSetting={updateSetting}
+            onSave={saveSettings}
+          />
+        )}
+
+        {activeView === "activity" && (
+  		<ActivityPage
+    			logs={data.logs}
+    			lastScanAt={data.stats.last_scan_at}
+    			viewError={viewError}
+  		/>
+	)}
+      </section>
+    </main>
+  );
+}
+   

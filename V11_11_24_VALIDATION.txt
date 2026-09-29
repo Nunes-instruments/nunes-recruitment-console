@@ -1,0 +1,48 @@
+NUNES V11.11.24 - ALL CANDIDATES + RAG FINAL VALIDATION
+=====================================================================
+
+PASS - Python syntax
+PASS - Version V11.11.24
+PASS - All-view default
+PASS - All URL normalizer
+PASS - All backfill state
+PASS - Backfill batch internal
+PASS - New candidates prioritized
+PASS - Old active candidates backfilled
+PASS - Terminal candidates excluded
+PASS - All/New Jobs snapshot persisted
+PASS - Duplicate postings counts combined
+PASS - Only current role states active
+PASS - Candidate role canonicalization
+PASS - RAG retrieval scoring
+PASS - OpenAI cost cap retained
+PASS - Stage 1 auto mail retained
+PASS - Permanent duplicate protection
+PASS - HR approval gate retained
+PASS - Stage 2 interview email retained
+PASS - Dashboard All/New UI
+PASS - Role review all active wording
+PASS - Single Chrome retained
+PASS - URL converts New to All
+PASS - Indeed JavaScript syntax
+PASS - TypeScript syntax
+PASS - No undefined overview state
+SKIP - Backend critical self-test (Flask is not installed in this build container; FIRST_SETUP installs runtime dependencies before startup self-test)
+PASS - All/New selection policy
+PASS - Older active applicant can queue thank-you
+PASS - RAG + counts + HR approval integration
+PASS - No Google password embedded
+
+Diagnostics:
+  File "<string>", line 6, in <module>
+    import app
+  File "/mnt/data/NUNES_V11_11_24_ALL_CANDIDATES_RAG_FINAL/app.py", line 11, in <module>
+    from flask import Flask, request, jsonify, send_from_directory
+ModuleNotFoundError: No module named 'flask'
+
+
+
+Network live Indeed/Gmail sending was not performed in this build environment.
+
+OVERALL EXECUTED TESTS: PASS
+NOTE: Live Indeed/Gmail network actions and Flask server startup were not executed in this build container.
