@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_READY_SYNC_PATCH = "V11.11.24-READY-OUTBOX-SYNC"
 
 LOCALAPPDATA = os.environ.get("LOCALAPPDATA")
 if LOCALAPPDATA:
@@ -1523,7 +1522,7 @@ def _local_date_for_iso(value):
         return dt.date()
 
 
-def live_detection_snapshot(stale_after_seconds=120):
+def live_detection_snapshot(stale_after_seconds=15):
     """
     Explicit proof that the live detector is actually running now.
 
@@ -1730,7 +1729,6 @@ def stats():
             "SELECT COUNT(*) FROM applications"
         ).fetchone()[0]
 
-        # READY on the dashboard must mean actually eligible for the Stage-1 outbox.
         ready = c.execute(
             """
             SELECT COUNT(*)
@@ -1739,19 +1737,13 @@ def stats():
               AND trim(candidate_email)<>''
               AND COALESCE(application_verified,0)=1
               AND extraction_status IN ('VERIFIED_EMAIL_AND_ROLE','VERIFIED_EMAIL_FOUND')
-              AND email_source IN (
-                  'indeed_resume',
-                  'indeed_resume_ai_verified',
-                  'indeed_candidate_profile',
-                  'indeed_candidate_contact_verified'
-              )
-              AND lower(trim(COALESCE(job_title,''))) NOT IN ('','the position','position')
-              AND lower(trim(COALESCE(candidate_name,''))) NOT IN (
-                  '', 'candidate', 'download cv', 'download resume',
-                  'core skills', 'resume', 'education', 'yes', 'no'
-              )
+              AND lower(trim(COALESCE(job_title,'')))
+                  NOT IN ('','the position','position')
               AND COALESCE(send_status,'') NOT IN (
-                  'SENT','DUPLICATE_SKIPPED','SENDING','SEND_UNCERTAIN','SKIPPED'
+                  'SENT',
+                  'DUPLICATE_SKIPPED',
+                  'SENDING',
+                  'SEND_UNCERTAIN'
               )
             """
         ).fetchone()[0]
@@ -1809,4 +1801,3 @@ def stats():
         "corrections": correction_stats(),
         "live_detection": live_detection_snapshot(),
     }
-

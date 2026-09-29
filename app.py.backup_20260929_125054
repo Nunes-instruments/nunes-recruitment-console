@@ -41,6 +41,7 @@ from automation import (
     process_indeed_results,
     send_thank_you,
     send_all_ready,
+    send_all_ready_corrections,
     smtp_health_check,
 )
 from chrome_cdp import (
@@ -100,7 +101,6 @@ from recruitment_pipeline import (
 BASE_DIR = Path(__file__).resolve().parent
 API_PORT = 5286
 APP_VERSION = "V11.11.24"
-APP_FIRST_MAIL_ONLY_PATCH = "V11.11.24-FIRST-MAIL-ONLY"
 
 app = Flask(__name__)
 app.secret_key = "nunes-recruitment-console-v10"
@@ -1005,6 +1005,20 @@ def live_outbox_loop():
                             f"attempted={result.get('attempted',0)}, "
                             f"sent={result.get('sent',0)}, "
                             f"remaining={result.get('remaining',0)}"
+                        )
+
+                    correction_result = send_all_ready_corrections()
+
+                    if (
+                        correction_result.get("attempted", 0)
+                        or correction_result.get("sent", 0)
+                    ):
+                        log(
+                            "INFO",
+                            "ONE-TIME CORRECTION OUTBOX: "
+                            f"attempted={correction_result.get('attempted',0)}, "
+                            f"sent={correction_result.get('sent',0)}, "
+                            f"remaining={correction_result.get('remaining',0)}"
                         )
 
                 except Exception as e:

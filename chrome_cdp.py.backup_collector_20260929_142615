@@ -36,7 +36,6 @@ BASE_DIR = Path(__file__).resolve().parent
 CANDIDATE_NAME_SAFETY_PATCH = "V11.11.24-CANDIDATE-NAME-SAFETY"
 RETRY_CLOCK_PATCH = "V11.11.24-DETAIL-RETRY-CLOCK"
 JOBS_QUEUE_RECOVERY_PATCH = "V11.11.24-JOBS-QUEUE-RECOVERY"
-CANDIDATE_COLLECTOR_PATCH = "V11.11.24-COLLECTOR-V2"
 RESUME_CAPTURE_PATCH = "V11.11.24-CANDIDATE-DETAIL-RESUME"
 
 EMAILISH_INDEED = re.compile(r"indeed\.", re.I)
@@ -3613,56 +3612,26 @@ COLLECT_LINKS_JS = r"""
   const smallestCandidateRows = () => {
     const result = new Set();
 
-    const looksLikeCandidateRow = (el) => {
-      if (!el) return false;
-
-      const t = (el.innerText || '').trim();
-      if (!t || t.length < 8 || t.length > 3500) return false;
-
-      const meta = [
-        el.getAttribute?.('data-testid') || '',
-        el.getAttribute?.('aria-label') || '',
-        el.className || '',
-        el.getAttribute?.('role') || '',
-      ].join(' ');
-
-      const applied = /\bApplied\s+to\s*:?\s*/i.test(t);
-
-      const semantic = /(candidate|applicant|application)/i.test(meta);
-
-      const candidateLink = [...el.querySelectorAll('a[href]')].some(a =>
-        /(candidate|applicant|application)/i.test(a.href || '')
-      );
-
-      const workflow = /\b(new|reviewing|contacting|interviewing|selected|rejected|hired|withdrawn|archived|resume|application|applied)\b/i.test(t);
-
-      const lines = t.split(/\n+/).filter(Boolean);
-
-      return (
-        applied ||
-        (
-          (semantic || candidateLink)
-          && workflow
-          && lines.length >= 2
-          && lines.length <= 60
-        )
-      );
-    };
-
+    // First, semantic candidates.
     for (const el of document.querySelectorAll(
       '[data-testid*="candidate" i],'
       + '[data-testid*="applicant" i],'
       + '[data-testid*="application" i],'
       + '[role="row"],tr,li,article'
     )) {
-      if (looksLikeCandidateRow(el)) {
+      const t = el.innerText || '';
+      if (
+        /\bApplied\s+to\s*:?\s*/i.test(t)
+        && t.length >= 10
+        && t.length <= 3000
+      ) {
         result.add(el);
       }
     }
 
+    // Indeed Manage Candidates can also use plain nested DIVs.
     for (const el of [...document.querySelectorAll('div')]) {
       const t = el.innerText || '';
-
       if (
         !/\bApplied\s+to\s*:?\s*/i.test(t)
         || t.length < 10
@@ -3672,10 +3641,8 @@ COLLECT_LINKS_JS = r"""
       }
 
       let smallerChild = false;
-
       for (const child of [...el.children]) {
         const ct = child.innerText || '';
-
         if (
           /\bApplied\s+to\s*:?\s*/i.test(ct)
           && ct.length >= 10

@@ -34,10 +34,6 @@ from database import (
 
 BASE_DIR = Path(__file__).resolve().parent
 CANDIDATE_NAME_SAFETY_PATCH = "V11.11.24-CANDIDATE-NAME-SAFETY"
-RETRY_CLOCK_PATCH = "V11.11.24-DETAIL-RETRY-CLOCK"
-JOBS_QUEUE_RECOVERY_PATCH = "V11.11.24-JOBS-QUEUE-RECOVERY"
-CANDIDATE_COLLECTOR_PATCH = "V11.11.24-COLLECTOR-V2"
-RESUME_CAPTURE_PATCH = "V11.11.24-CANDIDATE-DETAIL-RESUME"
 
 EMAILISH_INDEED = re.compile(r"indeed\.", re.I)
 
@@ -2575,7 +2571,7 @@ def discover_employer_job_descriptions(max_jobs=25):
             sid,
             expression,
             await_promise=True,
-            timeout=120,
+            timeout=40,
         ) or []
 
         clean_rows = [
@@ -3136,15 +3132,6 @@ def _usable_candidate_name(value):
     navigation/UI labels must never become a candidate identity.
     """
     name = re.sub(r"\s+", " ", str(value or "")).strip(" |:-")
-
-    # Indeed sometimes renders contact email next to the candidate heading.
-    # Never persist an email address as part of candidate_name.
-    name = re.sub(
-        r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
-        " ",
-        name,
-    )
-    name = re.sub(r"\s+", " ", name).strip(" |:-")
     low = name.casefold()
 
     if not name or len(name) < 2 or len(name) > 100:
@@ -3613,56 +3600,26 @@ COLLECT_LINKS_JS = r"""
   const smallestCandidateRows = () => {
     const result = new Set();
 
-    const looksLikeCandidateRow = (el) => {
-      if (!el) return false;
-
-      const t = (el.innerText || '').trim();
-      if (!t || t.length < 8 || t.length > 3500) return false;
-
-      const meta = [
-        el.getAttribute?.('data-testid') || '',
-        el.getAttribute?.('aria-label') || '',
-        el.className || '',
-        el.getAttribute?.('role') || '',
-      ].join(' ');
-
-      const applied = /\bApplied\s+to\s*:?\s*/i.test(t);
-
-      const semantic = /(candidate|applicant|application)/i.test(meta);
-
-      const candidateLink = [...el.querySelectorAll('a[href]')].some(a =>
-        /(candidate|applicant|application)/i.test(a.href || '')
-      );
-
-      const workflow = /\b(new|reviewing|contacting|interviewing|selected|rejected|hired|withdrawn|archived|resume|application|applied)\b/i.test(t);
-
-      const lines = t.split(/\n+/).filter(Boolean);
-
-      return (
-        applied ||
-        (
-          (semantic || candidateLink)
-          && workflow
-          && lines.length >= 2
-          && lines.length <= 60
-        )
-      );
-    };
-
+    // First, semantic candidates.
     for (const el of document.querySelectorAll(
       '[data-testid*="candidate" i],'
       + '[data-testid*="applicant" i],'
       + '[data-testid*="application" i],'
       + '[role="row"],tr,li,article'
     )) {
-      if (looksLikeCandidateRow(el)) {
+      const t = el.innerText || '';
+      if (
+        /\bApplied\s+to\s*:?\s*/i.test(t)
+        && t.length >= 10
+        && t.length <= 3000
+      ) {
         result.add(el);
       }
     }
 
+    // Indeed Manage Candidates can also use plain nested DIVs.
     for (const el of [...document.querySelectorAll('div')]) {
       const t = el.innerText || '';
-
       if (
         !/\bApplied\s+to\s*:?\s*/i.test(t)
         || t.length < 10
@@ -3672,10 +3629,8 @@ COLLECT_LINKS_JS = r"""
       }
 
       let smallerChild = false;
-
       for (const child of [...el.children]) {
         const ct = child.innerText || '';
-
         if (
           /\bApplied\s+to\s*:?\s*/i.test(ct)
           && ct.length >= 10
@@ -4319,24 +4274,6 @@ CANDIDATE_PAYLOAD_JS = r"""
     } catch (_) {}
   }
 
-  // Resume viewers can be mounted outside the original candidate drawer (portal/
-  // overlay rendering). Read only visible resume/CV-labelled nodes and keep the
-  // largest text block.
-  for (const n of [...document.querySelectorAll(
-    '[role="dialog"] [data-testid*="resume" i],'
-    + '[role="dialog"] [class*="resume" i],'
-    + '[role="dialog"] [id*="resume" i],'
-    + '[role="dialog"] [data-testid*="cv" i],'
-    + '[role="dialog"] [class*="cv" i],'
-    + '[role="dialog"] [id*="cv" i]'
-  )]) {
-    if (!isVisible(n)) continue;
-    const t = (n.innerText || n.textContent || '').trim();
-    if (t.length > resumeText.length && t.length < 120000) {
-      resumeText = t;
-    }
-  }
-
   const links = [...scopeRoot.querySelectorAll('a[href]')].map(a => ({
     href: a.href || '',
     text: (a.innerText || a.textContent || '').trim().slice(0, 180)
@@ -4476,62 +4413,6 @@ CANDIDATE_PAYLOAD_JS = r"""
   }
 
   const expandedBody = (scopeRoot?.innerText || body).slice(0, 180000);
-
-  // Indeed has multiple candidate-detail layouts. In some layouts the resume is
-  // rendered inside ordinary <div>/<section> nodes without "resume" or "cv" in
-  // their attributes. The old selector-only logic therefore produced an empty
-  // resume_text_cache even though the candidate's resume was visibly on screen.
-  //
-  // Use the selected candidate detail ONLY (never the applicant list) and require
-  // multiple resume-like signals before accepting the detail body as inline resume
-  // evidence. This keeps ranking grounded in candidate-specific content.
-  const resumeEvidencePatterns = [
-    /\bwork\s+experience\b/i,
-    /\bprofessional\s+experience\b/i,
-    /\bemployment\s+(?:history|experience)\b/i,
-    /\beducation\b/i,
-    /\bskills?\b/i,
-    /\bprojects?\b/i,
-    /\bcertifications?\b/i,
-    /\bqualification(?:s)?\b/i,
-    /\bcareer\s+(?:objective|summary)\b/i,
-    /\bprofessional\s+summary\b/i,
-    /\btechnical\s+skills?\b/i,
-    /\bresponsibilit(?:y|ies)\b/i,
-    /\blanguages?\b/i,
-  ];
-
-  const cleanInlineResume = (value) => {
-    let out = (value || '').replace(/\r/g, '\n');
-    out = out
-      .split('\n')
-      .map(x => x.trim())
-      .filter(Boolean)
-      .filter(x => !/^(?:download|open|view)\s+(?:cv|resume)$/i.test(x))
-      .filter(x => !/^(?:message|reject|move|schedule interview|contact candidate)$/i.test(x))
-      .join('\n');
-    return out.slice(0, 120000);
-  };
-
-  if (
-    scopeIsCandidateSpecific
-    && (!resumeText || resumeText.trim().length < 220)
-  ) {
-    const candidateDetailText = cleanInlineResume(expandedBody);
-    const resumeSignalCount = resumeEvidencePatterns.reduce(
-      (count, pattern) => count + (pattern.test(candidateDetailText) ? 1 : 0),
-      0
-    );
-
-    // Require a meaningful amount of candidate-specific text and at least two
-    // independent resume signals. Contact-only drawers will not satisfy this.
-    if (
-      candidateDetailText.length >= 350
-      && resumeSignalCount >= 2
-    ) {
-      resumeText = candidateDetailText;
-    }
-  }
 
   const emailRe = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/ig;
   const phoneRe = /(?:\+?\d[\d\s().-]{7,}\d)/g;
@@ -5323,11 +5204,8 @@ def _review_retry_due(existing):
     else:
         delay_seconds = 180
 
-    # Retry age must be based on the last DETAIL/extraction attempt.
-    # last_seen_at is only visibility evidence and is refreshed during list scans;
-    # using it here can prevent unresolved candidates from ever becoming due.
     stamp = (
-        existing.get("application_checked_at")
+        existing.get("last_seen_at")
         or existing.get("updated_at")
         or existing.get("first_seen_at")
     )
@@ -5500,10 +5378,6 @@ def scan_existing_chrome(fast_only=False):
             for item in candidate_queues
             if isinstance(item, dict)
             and "indeed." in str(item.get("url") or "").lower()
-            and any(
-                token in str(item.get("url") or "").lower()
-                for token in ("/candidate", "/applicant", "/application")
-            )
             and str(item.get("job_status") or "OPEN").upper()
                 in {"OPEN", "PAUSED", "FLAGGED", "UNKNOWN"}
         ]

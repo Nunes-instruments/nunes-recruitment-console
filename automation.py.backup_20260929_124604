@@ -2,8 +2,6 @@ from __future__ import annotations
 import base64, re, json, smtplib, ssl, socket, html, zipfile, unicodedata
 from io import BytesIO
 from pathlib import Path
-
-FIRST_MAIL_ALL_APPLICANTS_PATCH = "V11.11.24-ALL-FIRST-MAIL"
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -735,6 +733,11 @@ def process_indeed_results(results):
                     "Skipped: candidate is already in terminal Indeed status "
                     + str(item.get("indeed_status") or candidate_status)
                 )
+            elif not role_accepts_new_applications(job_title):
+                send_status = "SKIPPED"
+                decision_reason = (
+                    "Skipped: this role is not in the current Open/Paused/Flagged Indeed jobs list"
+                )
             elif already_sent(email_addr):
                 send_status = "DUPLICATE_SKIPPED"
                 decision_reason = (
@@ -757,11 +760,12 @@ def process_indeed_results(results):
             decision_reason = "Waiting: exact applied role not verified yet"
 
         elif email_verification == "AMBIGUOUS_MULTIPLE_EMAILS":
-            extraction_status = "NEEDS_REVIEW_AMBIGUOUS_EMAIL"
-            send_status = "NOT_SENT"
+            extraction_status = "SKIPPED_AMBIGUOUS_EMAIL"
+            send_status = "SKIPPED"
             decision_reason = (
-                "Waiting: multiple candidate emails found; retry/review required"
+                "Skipped: multiple candidate emails found and ownership is ambiguous"
             )
+
         elif item.get("resume_found") and not resume_text.strip():
             extraction_status = "NEEDS_REVIEW_RESUME_NO_TEXT"
             send_status = "NOT_SENT"
@@ -775,10 +779,10 @@ def process_indeed_results(results):
             decision_reason = "Waiting: candidate resume is not available yet"
 
         else:
-            extraction_status = "NEEDS_REVIEW_NO_VERIFIED_EMAIL"
-            send_status = "NOT_SENT"
+            extraction_status = "SKIPPED_NO_EMAIL_IN_RESUME"
+            send_status = "SKIPPED"
             decision_reason = (
-                "Waiting: no verified candidate email found yet; retry/review required"
+                "Skipped: no valid candidate email found in the resume/contact data"
             )
 
         row = {
@@ -1329,6 +1333,14 @@ def send_thank_you(source_key):
         raise RuntimeError(
             "Waiting for the real Indeed job title before sending."
         )
+
+    if not role_accepts_new_applications(app.get("job_title")):
+        release_send_claim(
+            source_key,
+            "SKIPPED",
+            "Role is paused/closed; new applicant outreach is stopped",
+        )
+        return {"status": "role_closed_skipped"}
 
     # A second permanent check after the claim makes manual/API edge cases safe.
     if already_sent(addr):

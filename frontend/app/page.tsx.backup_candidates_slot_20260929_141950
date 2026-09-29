@@ -1854,14 +1854,15 @@ export default function Home() {
                       </td>
                       <td className="actionsCell">
                         {row.profile_url && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => window.open(row.profile_url!, "_blank", "noopener,noreferrer")}
-                          >
-                            <ExternalLink />
-                            <span>Open</span>
+                          <Button asChild variant="ghost" size="sm">
+                            <a
+                              href={row.profile_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <ExternalLink />
+                              Open
+                            </a>
                           </Button>
                         )}
                       </td>
