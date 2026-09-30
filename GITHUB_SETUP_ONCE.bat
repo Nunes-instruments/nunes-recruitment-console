@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 pushd "%~dp0" >nul 2>&1
 
-set "REPO_URL=https://github.com/Nunes-instruments/indeed_auomation.git"
+set "REPO_URL=https://github.com/Nunes-instruments/nunes-recruitment-console.git"
 set "BRANCH=main"
 
 echo ============================================================
