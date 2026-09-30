@@ -5,12 +5,13 @@ __pycache__/
 frontend/node_modules/
 frontend/.next/
 
-# Local data, logs, PID files, resumes, databases
+# Local data, logs, PID files, resumes, databases, binaries
 data/
 *.log
 *.pid
 *.db*
 *.backup*
+cloudflared.exe
 
 # Temporary scratch and migration scripts
 scratch_*.py
