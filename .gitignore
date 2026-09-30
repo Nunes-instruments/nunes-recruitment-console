@@ -5,10 +5,21 @@ __pycache__/
 frontend/node_modules/
 frontend/.next/
 
-# Local data, logs, PID files, resumes
+# Local data, logs, PID files, resumes, databases
 data/
 *.log
 *.pid
+*.db*
+*.backup*
+
+# Temporary scratch and migration scripts
+scratch_*.py
+test_*.py
+inspect_*.py
+fix_and_rank_all.py
+clean_normalize_all.py
+quick_rank_remaining.py
+rank_all_roles.py
 
 # Secrets / local environment
 .env
@@ -25,3 +36,4 @@ Thumbs.db
 
 # Never commit local settings; settings.example.json is the safe template.
 /settings.json
+

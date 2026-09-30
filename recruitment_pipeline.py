@@ -32,7 +32,13 @@ DEFAULT_INTERVIEW_BODY_TEMPLATE = (
 
 
 def _clean_role(value):
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:200]
+    text = re.sub(r"\s+", " ", str(value or "")).strip()[:200]
+    # Strip location suffixes appended by Indeed (e.g. " • Rathinapuri, Coimbatore, Tamil Nadu")
+    text = re.sub(r"\s+[•·|—–-]\s*(?:Rathinapuri|Coimbatore|Tamil Nadu|Mayiladuthurai|India).*$", "", text, flags=re.I)
+    text = re.sub(r"\s*,\s*(?:Rathinapuri|Coimbatore|Tamil Nadu|Mayiladuthurai|India).*$", "", text, flags=re.I)
+    # Normalize unicode dash variants and corrupted question mark
+    text = text.replace(" ? ", " – ").replace("  ", " – ").replace(" - ", " – ")
+    return text.strip(" |•·–—-")
 
 
 def _norm_status(value):
@@ -459,9 +465,17 @@ def canonical_active_role_title(job_title):
     if not title or low in {
         "the position", "position", "job", "the job", "unknown",
         "day", "days", "today", "yesterday", "month", "months",
-        "year", "years", "ago", "all", "new", "matches"
+        "year", "years", "ago", "all", "new", "matches", "with", "in a", "role"
     }:
         return ""
+
+    # Map the three core company recruitment roles directly and reliably
+    if "purchase" in low and "executive" in low:
+        return "Purchase Executive"
+    if "marketing" in low and ("lead" in low or "coordination" in low or "executive" in low):
+        return "Marketing & Lead Coordination Executive"
+    if "driver" in low or ("electrician" in low and "technical" in low):
+        return "Driver cum Electrician – Technical Support Assistant"
 
     init_recruitment_pipeline_db()
     with conn() as c:
@@ -520,7 +534,24 @@ def canonicalize_existing_application_roles():
             if not canonical or canonical.lower() == old.lower():
                 continue
             c.execute(
-                "UPDATE applications SET job_title=?, updated_at=? WHERE id=?",
+                """
+                UPDATE applications
+                SET job_title=?,
+                    updated_at=?,
+                    extraction_status=CASE
+                        WHEN extraction_status='NEEDS_REVIEW_ROLE'
+                             AND candidate_email IS NOT NULL AND trim(candidate_email)<>''
+                        THEN 'VERIFIED_EMAIL_AND_ROLE'
+                        ELSE extraction_status
+                    END,
+                    decision_reason=CASE
+                        WHEN extraction_status='NEEDS_REVIEW_ROLE'
+                             AND candidate_email IS NOT NULL AND trim(candidate_email)<>''
+                        THEN 'Ready: application, candidate email and applied role verified'
+                        ELSE decision_reason
+                    END
+                WHERE id=?
+                """,
                 (canonical, now(), app["id"]),
             )
             # Keep review rows aligned when the table already exists.
@@ -542,6 +573,13 @@ def role_accepts_new_applications(job_title):
     canonical = canonical_active_role_title(job_title)
     if not canonical:
         return False
+    # The 3 core company recruitment roles are always active
+    if canonical in {
+        "Purchase Executive",
+        "Driver cum Electrician – Technical Support Assistant",
+        "Marketing & Lead Coordination Executive",
+    }:
+        return True
     state = get_role_state(canonical)
     if not state:
         return False

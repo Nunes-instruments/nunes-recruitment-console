@@ -19,7 +19,7 @@ from database import (
 )
 from automation import extract_text_from_resume
 from config import load_settings
-from recruitment_pipeline import role_accepts_ranking
+from recruitment_pipeline import role_accepts_ranking, canonical_active_role_title
 from local_rag import (
     CATEGORY_WEIGHTS,
     EMBEDDING_MODEL,
@@ -38,6 +38,20 @@ GENERIC_ROLES = {
     "job",
     "the job",
     "unknown",
+    "day",
+    "days",
+    "with",
+    "in a",
+    "role",
+    "all jobs",
+    "messages",
+    "view billing history",
+    "update payment method",
+    "view performance report",
+    "cookies, privacy and terms",
+    "security",
+    "billing",
+    "upgrade to premium",
 }
 
 STOPWORDS = {
@@ -253,7 +267,8 @@ def meaningful_role(value: str | None) -> bool:
 
 
 def _clean_role(value: str | None) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:200]
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip()[:200]
+    return canonical_active_role_title(cleaned) if cleaned else ""
 
 
 def _clean_description(value: str | None) -> str:
@@ -758,6 +773,8 @@ def _semantic_evidence(requirements, requirement_vectors, chunks, chunk_vectors)
         {"text": text, "vector": vector}
         for text, vector in zip(chunks, chunk_vectors)
     ]
+    full_text = " ".join(chunks)
+    norm_full = _normalize_text(full_text)
 
     for requirement, requirement_vector in zip(requirements, requirement_vectors):
         text = str(requirement.get("requirement") or "")
@@ -788,29 +805,47 @@ def _semantic_evidence(requirements, requirement_vectors, chunks, chunk_vectors)
             "confidence": 0.0,
         }
         if best:
-            exact, similarity, lexical, source_text, matched = best
-            semantic_coverage = max(0.0, min(1.0, (similarity - 0.30) / 0.48))
+            exact, similarity, chunk_lexical, source_text, matched = best
+            global_matched = [token for token in tokens if token in norm_full]
+            
+            # Special credit for degrees/education
+            is_edu = any(d in text.lower() for d in ("degree", "graduate", "b.com", "bba", "b.e", "b.tech", "diploma"))
+            if is_edu and any(d in norm_full for d in ("b com", "b.com", "bba", "b e", "b.e", "btech", "degree", "graduate", "diploma")):
+                global_matched.extend(["degree", "graduate"])
+                
+            # Special credit for languages
+            for lang in ("english", "tamil", "hindi", "telugu", "malayalam"):
+                if lang in text.lower() and lang in norm_full:
+                    global_matched.append(lang)
+                    
+            g_lex = len(set(global_matched)) / max(1, len(tokens))
+            lexical = max(chunk_lexical, 0.70 * g_lex + 0.30 * chunk_lexical)
+            semantic_coverage = max(0.0, min(1.0, (similarity - 0.25) / 0.40))
+            
             if exact:
                 status, coverage, confidence = "EXPLICIT", 1.0, 0.98
-            elif similarity >= 0.56 and lexical >= 0.10:
+            elif lexical >= 0.38 or (similarity >= 0.45 and lexical >= 0.10):
                 status = "SUPPORTED"
-                coverage = min(0.92, 0.45 + semantic_coverage * 0.48)
-                confidence = min(0.88, 0.58 + semantic_coverage * 0.30)
-            elif similarity >= 0.56:
+                cov = max(lexical, 0.45 + semantic_coverage * 0.48 if similarity >= 0.25 else lexical * 0.92)
+                coverage = min(0.95, max(0.55, cov))
+                confidence = min(0.90, 0.55 + lexical * 0.40)
+            elif lexical >= 0.20 or similarity >= 0.32:
                 status = "INFERRED"
-                coverage = min(0.72, 0.32 + semantic_coverage * 0.40)
-                confidence = min(0.68, 0.42 + semantic_coverage * 0.26)
-            elif lexical >= 0.45 and similarity >= 0.38:
-                status, coverage, confidence = "WEAK", min(0.45, 0.18 + lexical * 0.27), 0.42
+                cov = max(lexical * 0.85, 0.32 + semantic_coverage * 0.40 if similarity >= 0.20 else lexical * 0.78)
+                coverage = min(0.75, max(0.38, cov))
+                confidence = min(0.75, 0.40 + lexical * 0.35)
+            elif lexical >= 0.08 or similarity >= 0.20:
+                status, coverage, confidence = "WEAK", min(0.45, 0.20 + lexical * 0.35), 0.40
             else:
                 status, coverage, confidence = "NOT_FOUND", 0.0, 0.0
 
             if status != "NOT_FOUND":
+                all_matched = list(dict.fromkeys(matched + global_matched))
                 item.update({
                     "status": status,
-                    "evidence": source_text[:520],
-                    "retrieved_evidence": [source_text[:520]],
-                    "matched_terms": matched[:18],
+                    "evidence": source_text[:520] if source_text else "Evidence verified in candidate resume.",
+                    "retrieved_evidence": [source_text[:520]] if source_text else [],
+                    "matched_terms": all_matched[:18],
                     "semantic_similarity": round(similarity, 4),
                     "lexical_coverage": round(lexical, 4),
                     "coverage": round(coverage, 4),

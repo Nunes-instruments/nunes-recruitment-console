@@ -137,7 +137,13 @@ def parse_jd_requirements(description: str) -> list[dict]:
         "responsibilities", "duties", "preferred qualifications", "preferred skills",
         "preferred requirements", "education", "certifications", "experience",
         "industry experience", "nice to have", "minimum qualifications",
+        "job description", "job summary", "key responsibilities", "mandatory requirements"
     }
+
+    metadata_prefixes = (
+        "company:", "department:", "job type:", "location:", "salary:",
+        "position:", "role:", "experience level:", "salary range:"
+    )
 
     for raw_line in re.split(r"\r?\n+", str(description or "")):
         raw_heading = re.sub(r"^\s*(?:[-*•▪◦]+|\d+[.)]|[A-Za-z][.)])\s*", "", raw_line).strip().rstrip(":").strip().lower()
@@ -146,7 +152,8 @@ def parse_jd_requirements(description: str) -> list[dict]:
         if not line:
             continue
 
-        if raw_heading in headings or (len(raw_heading) <= 80 and raw_line.strip().endswith(":")):
+        low_line = line.lower()
+        if low_line.startswith(metadata_prefixes) or raw_heading in headings or (len(raw_heading) <= 80 and raw_line.strip().endswith(":")):
             current_category = _section_category(raw_heading)
             continue
 
@@ -154,6 +161,8 @@ def parse_jd_requirements(description: str) -> list[dict]:
         for part in parts:
             requirement = part.strip(" .;:-\t")
             if len(requirement) < 3 or PROTECTED_ATTRIBUTE_RE.search(requirement):
+                continue
+            if requirement.lower().startswith(metadata_prefixes):
                 continue
             for category, pattern in HEADING_CATEGORIES:
                 if pattern.search(requirement[:100]):

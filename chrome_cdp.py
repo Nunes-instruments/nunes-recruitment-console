@@ -131,11 +131,27 @@ WAIT_CANDIDATES_READY_JS = r"""
   const started = Date.now();
 
   while (Date.now() - started < 9000) {
+    const title = document.title || '';
     const body = document.body?.innerText || '';
-        const hasApplicationRows = /\bapplied\s+to\s*:/i.test(body);
-        const hasEmptyState = /no\s+(?:applicants|candidates|applications)/i.test(body);
-        const hasCandidateDetail = /resume|contact\s+information|candidate\s+email/i.test(body);
-        const ready = hasApplicationRows || hasEmptyState || hasCandidateDetail;
+
+    const isChallenge = (
+      /just a moment/i.test(title)
+      || /turnstile/i.test(body)
+      || /checking if the site connection is secure/i.test(body)
+      || Boolean(document.querySelector('#turnstile-wrapper, .cf-turnstile, iframe[src*="challenges.cloudflare.com"]'))
+    );
+    if (isChallenge) {
+      return {ready: false, challenge: true, bodyPreview: body.slice(0, 5000)};
+    }
+
+    const hasApplicationRows = (
+      /\bapplied\s+to\s*:/i.test(body)
+      || Boolean(document.querySelector('[data-testid*="candidate" i], [data-testid*="applicant" i], [role="row"], tr[data-testid]'))
+      || /\b(new|reviewing|contacting|interviewing|selected|rejected|hired)\b/i.test(body)
+    );
+    const hasEmptyState = /no\s+(?:applicants|candidates|applications)/i.test(body);
+    const hasCandidateDetail = /resume|contact\s+information|candidate\s+email/i.test(body);
+    const ready = hasApplicationRows || hasEmptyState || hasCandidateDetail;
 
     if (ready) {
       window.scrollTo(0, 0);
@@ -152,21 +168,36 @@ WAIT_CANDIDATES_READY_JS = r"""
         } catch (_) {}
       }
 
-      return {ready: true, bodyPreview: body.slice(0, 5000)};
+      return {ready: true, challenge: false, bodyPreview: body.slice(0, 5000)};
     }
 
     await sleep(250);
   }
 
+  const finalTitle = document.title || '';
+  const finalBody = document.body?.innerText || '';
+  const isChallenge = (
+    /just a moment/i.test(finalTitle)
+    || /turnstile/i.test(finalBody)
+    || /checking if the site connection is secure/i.test(finalBody)
+    || Boolean(document.querySelector('#turnstile-wrapper, .cf-turnstile, iframe[src*="challenges.cloudflare.com"]'))
+  );
+
   return {
     ready: false,
-    bodyPreview: (document.body?.innerText || '').slice(0, 5000),
+    challenge: isChallenge,
+    bodyPreview: finalBody.slice(0, 5000),
   };
 })()
 """
 
 
 class ChromeConnectionError(RuntimeError):
+    pass
+
+
+class IndeedChallengeError(ChromeConnectionError):
+    """Indeed is presenting a Cloudflare / Turnstile security challenge."""
     pass
 
 
@@ -1654,29 +1685,33 @@ def connect_shared_chrome(timeout=60):
 
 def get_shared_chrome():
     """
-    Return the already-approved connection.
-
-    IMPORTANT: this function NEVER creates a connection and therefore never
-    triggers the Chrome permission popup.
+    Return the shared Chrome connection, automatically reconnecting if
+    the existing client dropped or has not been initialized yet.
     """
     with _shared_client_lock:
         client = _shared_client
 
     if client is None:
-        raise ChromeConnectionError(
-            "Chrome is not connected to this console session yet. "
-            "Automatic reconnect is running in the background."
-        )
+        try:
+            return connect_shared_chrome(timeout=10)
+        except Exception as e:
+            raise ChromeConnectionError(
+                "Chrome is not connected to this console session yet. "
+                f"Automatic reconnect will restore it ({e})."
+            )
 
     try:
         _ping_client(client)
         return client
     except Exception as e:
         reset_shared_chrome(e)
-        raise ChromeConnectionError(
-            "The existing Chrome connection was closed. "
-            "Automatic reconnect will restore it."
-        )
+        try:
+            return connect_shared_chrome(timeout=10)
+        except Exception:
+            raise ChromeConnectionError(
+                "The existing Chrome connection was closed. "
+                "Automatic reconnect will restore it."
+            )
 
 
 def shared_connection_snapshot():
@@ -2939,82 +2974,95 @@ def stable_row_candidate_key(
     location_text="",
     identity_hint="",
 ):
-    identity = re.sub(
-        r"\s+",
-        " ",
-        (identity_hint or "").strip().lower(),
-    )
+    hint = str(identity_hint or "").strip()
 
-    if identity:
-        return hashlib.sha1(
-            ("row-id:" + identity).encode("utf-8", "ignore")
-        ).hexdigest()
+    # Prioritize candidate ID from Indeed URL or candidateid attribute
+    m = re.search(r"(?:candidate_?id|applicant_?id|application_?id)=([a-zA-Z0-9_-]{5,})", hint, re.I)
+    if m:
+        return hashlib.sha1(f"candidate:{m.group(1).lower()}".encode("utf-8")).hexdigest()
 
-    canonical = "|".join([
-        re.sub(r"\s+", " ", (candidate_name or "").strip().lower()),
-        re.sub(r"\s+", " ", (job_title or "").strip().lower()),
-        re.sub(r"\s+", " ", (location_text or "").strip().lower()),
-    ])
+    m2 = re.search(r"[?&]id=([a-f0-9]{6,})", hint, re.I)
+    if m2:
+        return hashlib.sha1(f"candidate:{m2.group(1).lower()}".encode("utf-8")).hexdigest()
 
-    return hashlib.sha1(
-        ("row:" + canonical).encode("utf-8", "ignore")
-    ).hexdigest()
+    clean_name = re.sub(r"\s+", " ", (candidate_name or "").strip().lower())
+    clean_job = re.sub(r"\s+", " ", (job_title or "").strip().lower())
+    if clean_job in {"the position", "position", "day", "days", "with", "in a", "role", "unknown"}:
+        clean_job = ""
+
+    canonical = f"{clean_name}|{clean_job}"
+    return hashlib.sha1(("row:" + canonical).encode("utf-8", "ignore")).hexdigest()
 
 
 def build_row_click_js(entry):
     """
-    Build JS that finds the smallest live Indeed candidate block matching
-    candidate name + Applied to job (+ location when available), then clicks
-    the candidate-name control/row with a user gesture.
+    Build JS that finds the live Indeed candidate block matching
+    the candidate or direct anchor, then clicks the candidate control.
     """
     name = json.dumps(entry.get("label") or "")
     job = json.dumps(entry.get("job_title") or "")
     location = json.dumps(entry.get("location_text") or "")
+    href = json.dumps(entry.get("href") or "")
 
     return f"""
 (async () => {{
   const targetName = {name};
   const targetJob = {job};
   const targetLocation = {location};
+  const targetHref = {href};
 
   const normalize = (s) => (s || '').replace(/\\s+/g, ' ').trim();
   const eq = (a, b) => normalize(a).toLowerCase() === normalize(b).toLowerCase();
 
-  const candidateBlocks = [];
+  let row = null;
 
-  for (const el of document.querySelectorAll(
-    '[data-testid*="candidate" i],'
-    + '[data-testid*="applicant" i],'
-    + '[data-testid*="application" i],'
-    + '[role="row"],tr,li,article,div'
-  )) {{
-    const raw = el.innerText || '';
-    if (!raw || raw.length > 2600) continue;
-
-    const hasName =
-      raw.toLowerCase().includes(targetName.toLowerCase());
-
-    const hasJob =
-      !targetJob
-      || raw.toLowerCase().includes(
-        ('applied to: ' + targetJob).toLowerCase()
-      )
-      || raw.toLowerCase().includes(targetJob.toLowerCase());
-
-    const hasLocation =
-      !targetLocation
-      || raw.toLowerCase().includes(targetLocation.toLowerCase());
-
-    if (hasName && hasJob && hasLocation) {{
-      candidateBlocks.push(el);
-    }}
+  // Direct candidate URL anchor match
+  if (targetHref) {{
+    try {{
+      const anchor = document.querySelector(`a[href="${{targetHref}}"]`);
+      if (anchor) {{
+        row = anchor.closest('[role="row"],tr,li,article,div') || anchor;
+      }}
+    }} catch (_) {{}}
   }}
 
-  candidateBlocks.sort(
-    (a, b) => (a.innerText || '').length - (b.innerText || '').length
-  );
+  if (!row) {{
+    const candidateBlocks = [];
 
-  const row = candidateBlocks[0];
+    for (const el of document.querySelectorAll(
+      '[data-testid*="candidate" i],'
+      + '[data-testid*="applicant" i],'
+      + '[data-testid*="application" i],'
+      + '[role="row"],tr,li,article,div'
+    )) {{
+      const raw = el.innerText || '';
+      if (!raw || raw.length > 2600) continue;
+
+      const hasName =
+        !targetName || targetName === 'Candidate' || targetName === 'Download Cv'
+        || raw.toLowerCase().includes(targetName.toLowerCase());
+
+      const hasJob =
+        !targetJob
+        || ['the position','day','with','in a','unknown'].includes(targetJob.toLowerCase())
+        || raw.toLowerCase().includes(('applied to: ' + targetJob).toLowerCase())
+        || raw.toLowerCase().includes(targetJob.toLowerCase());
+
+      const hasLocation =
+        !targetLocation
+        || raw.toLowerCase().includes(targetLocation.toLowerCase());
+
+      if (hasName && hasJob && hasLocation) {{
+        candidateBlocks.push(el);
+      }}
+    }}
+
+    candidateBlocks.sort(
+      (a, b) => (a.innerText || '').length - (b.innerText || '').length
+    );
+
+    row = candidateBlocks[0];
+  }}
 
   if (!row) {{
     return {{
@@ -3041,7 +3089,7 @@ def build_row_click_js(entry):
     + '[data-testid*="candidate" i]'
   )) {{
     const t = normalize(el.innerText || el.textContent || '');
-    if (eq(t, targetName)) {{
+    if (targetName && eq(t, targetName)) {{
       target = el;
       break;
     }}
@@ -3172,7 +3220,7 @@ def _usable_candidate_name(value):
     )):
         return ""
 
-    if re.search(r"\b(?:download|resume|curriculum|contact information|manage candidates)\b", low):
+    if re.search(r"\b(?:download|resume|curriculum|contact information|manage candidates|cv|candidate|applicant)\b", low):
         return ""
 
     # Candidate names should contain letters and should not be a sentence.
@@ -3873,6 +3921,22 @@ COLLECT_LINKS_JS = r"""
 COLLECT_VISIBLE_LINKS_JS = r"""
 (async () => {
   window.scrollTo(0, 0);
+
+  const title = document.title || '';
+  const bodyText = document.body?.innerText || '';
+  if (/just a moment/i.test(title) || /turnstile/i.test(bodyText) || /checking if the site connection is secure/i.test(bodyText)) {
+    return {
+      url: location.href,
+      title: document.title,
+      bodyPreview: bodyText.slice(0, 5000),
+      links: [],
+      collectionComplete: false,
+      collectedLinkCount: 0,
+      fastVisible: true,
+      challenge: true,
+    };
+  }
+
   const records = new Map();
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
@@ -3900,7 +3964,7 @@ COLLECT_VISIBLE_LINKS_JS = r"""
     if (!row) return null;
 
     const raw = (row.innerText || '').trim();
-    if (!raw || raw.length < 10 || raw.length > 3000) return null;
+    if (!raw || raw.length < 8 || raw.length > 3500) return null;
 
     const lines = raw
       .split(/\n+/)
@@ -3952,6 +4016,21 @@ COLLECT_VISIBLE_LINKS_JS = r"""
       }
     }
 
+    // Direct role matching for the core recruitment positions
+    if (!jobTitle) {
+      if (/purchase\s+executive/i.test(raw)) {
+        jobTitle = 'Purchase Executive';
+      } else if (/marketing\s+&(?:amp;)?\s+lead\s+coordination/i.test(raw) || /marketing\s+executive/i.test(raw)) {
+        jobTitle = 'Marketing & Lead Coordination Executive';
+      } else if (/driver\s+cum\s+electrician/i.test(raw)) {
+        jobTitle = 'Driver cum Electrician – Technical Support Assistant';
+      }
+    }
+
+    if (jobTitle && ['the position', 'position', 'day', 'days', 'with', 'in a', 'role', 'unknown'].includes(jobTitle.toLowerCase())) {
+      jobTitle = '';
+    }
+
     const rejectName = (line) => {
       const l = (line || '').toLowerCase();
       return (
@@ -3961,8 +4040,8 @@ COLLECT_VISIBLE_LINKS_JS = r"""
           'candidates','candidate','activity','interest',
           'matches to job post','all open and paused jobs','all jobs',
           'education','yes','no','manage candidates','find candidates',
-          'download cv','download resume','core skills','resume',
-          'contact information'
+          'download cv','download resume','view cv','view resume','open cv','open resume',
+          'core skills','resume','cv','contact information','applicant','applicants'
         ].includes(l) ||
         l.startsWith('applied to:') ||
         /^new(?:\s|$)/i.test(line) ||
@@ -3970,7 +4049,8 @@ COLLECT_VISIBLE_LINKS_JS = r"""
         /^contacting(?:\s|$)/i.test(line) ||
         /^interviewing(?:\s|$)/i.test(line) ||
         /^rejected(?:\s|$)/i.test(line) ||
-        /^hired(?:\s|$)/i.test(line)
+        /^hired(?:\s|$)/i.test(line) ||
+        /@/.test(line)
       );
     };
 
@@ -3998,8 +4078,6 @@ COLLECT_VISIBLE_LINKS_JS = r"""
       }
     }
 
-    if (!candidateName) return null;
-
     let locationText = '';
     for (const line of lines.slice(1, 8)) {
       const l = line.toLowerCase();
@@ -4009,7 +4087,7 @@ COLLECT_VISIBLE_LINKS_JS = r"""
         /^new(?:\s|$)/.test(l) ||
         /^reviewing(?:\s|$)/.test(l)
       ) continue;
-      if (line.length <= 100) {
+      if (line.length <= 100 && !/@/.test(line)) {
         locationText = line;
         break;
       }
@@ -4020,6 +4098,7 @@ COLLECT_VISIBLE_LINKS_JS = r"""
       && /\bapplied\b/i.test(raw);
 
     let candidateHref = '';
+    let candidateId = '';
 
     for (const a of [...row.querySelectorAll('a[href]')]) {
       const href = a.href || '';
@@ -4027,49 +4106,69 @@ COLLECT_VISIBLE_LINKS_JS = r"""
       if (!href || !/indeed\./i.test(href) || /\/login/i.test(href)) continue;
 
       const lowHref = href.toLowerCase();
-      const nameMatches = text.toLowerCase() === candidateName.toLowerCase();
+      const m = href.match(/[?&]id=([a-f0-9]+)/i) || href.match(/\/candidates\/view\?.*?id=([a-f0-9]+)/i) || href.match(/\/candidate\/([a-f0-9]+)/i);
+      if (m && !candidateId) {
+        candidateId = m[1];
+      }
+
+      const nameMatches = candidateName && text.toLowerCase() === candidateName.toLowerCase();
       const explicitCandidateUrl =
         /(candidate|applicant|application)/i.test(lowHref)
         && !/(viewjob|jobdetail|jobkey|\/jobs?\/)/i.test(lowHref);
 
       if (nameMatches || explicitCandidateUrl) {
         candidateHref = href;
-        break;
+        if (candidateId) break;
       }
     }
 
-    const identityBits = [];
-
-    for (const el of [row, ...row.querySelectorAll('*')].slice(0, 250)) {
-      for (const attr of [...(el.attributes || [])]) {
+    if (!candidateId) {
+      for (const attr of [...(row.attributes || [])]) {
         const n = (attr.name || '').toLowerCase();
         const v = (attr.value || '').trim();
-
-        if (!v || v.length > 220) continue;
-
-        if (
-          /(candidate|applicant|application).*(id|uid|key)/i.test(n)
-          || /^(data-(id|key|uid)|candidateid|applicantid|applicationid)$/i.test(n)
-        ) {
-          identityBits.push(`${n}=${v}`);
+        if (/(candidate|applicant|application).*(id|uid|key)/i.test(n) && v) {
+          candidateId = v;
+          break;
         }
       }
-      if (identityBits.length >= 12) break;
     }
+
+    const identityHint = candidateId
+      ? `candidate_id=${candidateId}`
+      : `${candidateName || 'unknown'}|${normalize(jobTitle)}|${locationText}`;
 
     return {
       recordType: 'row',
       href: candidateHref,
-      text: candidateName,
-      candidateName,
+      text: candidateName || 'Candidate',
+      candidateName: candidateName || 'Candidate',
       jobTitle: normalize(jobTitle),
       locationText,
       contextText: raw.slice(0, 2000),
       dataTestId: (row.getAttribute?.('data-testid') || '').slice(0, 240),
-      identityHint: identityBits.join('|').slice(0, 1600),
+      identityHint,
       currentNew,
       pipelineStatus: pipelineStatusFromText(raw),
     };
+  };
+
+  const isCandidateRow = (el) => {
+    if (!el) return false;
+    const raw = (el.innerText || '').trim();
+    if (raw.length < 10 || raw.length > 3000) return false;
+
+    const hasAppliedTo = /\bApplied\s+to\s*:?\s*/i.test(raw);
+    const hasCandidateLink = [...el.querySelectorAll('a[href]')].some(a =>
+      /(?:candidate|applicant|application|\/candidates\/view)/i.test(a.href || '')
+    );
+    const hasCandidateTestId = (
+      el.getAttribute?.('data-testid') || ''
+    ).toLowerCase().includes('candidate');
+    const isTableRow = el.matches?.('tr, [role="row"]');
+    const hasWorkflow = /\b(New|Reviewing|Contacting|Interviewing|Selected|Not Selected|Rejected|Hired)\b/i.test(raw);
+    const hasDate = /\b(?:day|days|month|months|year|years|today|yesterday)\s+ago\b/i.test(raw) || /\bapplied\b/i.test(raw);
+
+    return hasAppliedTo || ((hasCandidateLink || hasCandidateTestId || isTableRow) && (hasWorkflow || hasDate));
   };
 
   const candidates = [];
@@ -4080,18 +4179,11 @@ COLLECT_VISIBLE_LINKS_JS = r"""
     + '[data-testid*="application" i],'
     + '[role="row"],tr,li,article,div'
   )) {
-    const raw = el.innerText || '';
-    if (!/\bApplied\s+to\s*:?\s*/i.test(raw)) continue;
-    if (raw.length < 10 || raw.length > 2400) continue;
+    if (!isCandidateRow(el)) continue;
 
     let smallerChild = false;
     for (const child of [...el.children]) {
-      const childText = child.innerText || '';
-      if (
-        /\bApplied\s+to\s*:?\s*/i.test(childText)
-        && childText.length >= 10
-        && childText.length < raw.length
-      ) {
+      if (isCandidateRow(child) && (child.innerText || '').length < (el.innerText || '').length) {
         smallerChild = true;
         break;
       }
@@ -4104,12 +4196,7 @@ COLLECT_VISIBLE_LINKS_JS = r"""
     const rec = parseCandidateBlock(row);
     if (!rec) continue;
 
-    const key = [
-      rec.identityHint || '',
-      rec.candidateName.toLowerCase(),
-      rec.locationText.toLowerCase(),
-    ].join('|||');
-
+    const key = rec.identityHint || `${rec.candidateName.toLowerCase()}|||${rec.locationText.toLowerCase()}`;
     if (!records.has(key)) records.set(key, rec);
   }
 
@@ -4224,28 +4311,34 @@ CANDIDATE_PAYLOAD_JS = r"""
   ].filter(isVisible);
 
   const targetNameLow = normalize(TARGET_CANDIDATE_NAME).toLowerCase();
+  const currentUrl = (location.href || '').toLowerCase();
+  const isDirectCandidatePage = (
+    /(?:\/candidates\/view|\/candidate\/)/i.test(currentUrl)
+    && /[?&]id=[a-f0-9]+/i.test(currentUrl)
+  );
 
   let detailRoot = null;
-
-  for (const root of rootCandidates) {
-    const text = normalize(root.innerText || '');
-    if (
-      text
-      && (
-        !targetNameLow
-        || text.toLowerCase().includes(targetNameLow)
-      )
-    ) {
-      if (
-        !detailRoot
-        || text.length < normalize(detailRoot.innerText || '').length
-      ) {
-        detailRoot = root;
+  if (isDirectCandidatePage) {
+    detailRoot = document.body;
+  } else {
+    for (const root of rootCandidates) {
+      const text = normalize(root.innerText || '');
+      if (!text) continue;
+      if (targetNameLow && !['candidate', 'download cv', 'download resume'].includes(targetNameLow)) {
+        if (text.toLowerCase().includes(targetNameLow)) {
+          if (!detailRoot || text.length < normalize(detailRoot.innerText || '').length) {
+            detailRoot = root;
+          }
+        }
+      } else {
+        if (!detailRoot || text.length < normalize(detailRoot.innerText || '').length) {
+          detailRoot = root;
+        }
       }
     }
   }
 
-  if (!detailRoot && targetNameLow) {
+  if (!detailRoot && targetNameLow && !['candidate', 'download cv', 'download resume'].includes(targetNameLow)) {
     const matching = [...document.querySelectorAll('section,article,div')]
       .filter(isVisible)
       .map(el => ({
@@ -4264,14 +4357,12 @@ CANDIDATE_PAYLOAD_JS = r"""
     detailRoot = matching[0]?.el || null;
   }
 
-  if (!detailRoot && targetNameLow) {
+  if (!detailRoot) {
     const pageText = normalize(document.body?.innerText || '');
-    const currentUrl = (location.href || '').toLowerCase();
-
     if (
       /(candidate|applicant|application)/i.test(currentUrl)
-      && pageText.toLowerCase().includes(targetNameLow)
       && /(resume|contact|applied\s+to|application)/i.test(pageText)
+      && (targetNameLow && !['candidate', 'download cv'].includes(targetNameLow) ? pageText.toLowerCase().includes(targetNameLow) : true)
     ) {
       detailRoot = document.body;
     }
@@ -4290,6 +4381,24 @@ CANDIDATE_PAYLOAD_JS = r"""
     .map(x => (x.innerText || '').trim())
     .filter(Boolean)
     .slice(0, 30);
+
+  let recoveredCandidateName = '';
+  for (const h of headings) {
+    const norm = normalize(h);
+    const low = norm.toLowerCase();
+    if (
+      norm
+      && norm.length >= 2
+      && norm.length <= 80
+      && !['candidate','candidates','download cv','download resume','view cv','view resume','core skills','resume','cv','contact information'].includes(low)
+      && !low.startsWith('applied to')
+      && !low.includes('@')
+      && !/^(new|reviewing|contacting|interviewing|rejected|hired)$/i.test(low)
+    ) {
+      recoveredCandidateName = norm;
+      break;
+    }
+  }
 
   const resumeNodes = [...scopeRoot.querySelectorAll(
     '[data-testid*="resume" i],'
@@ -4789,6 +4898,7 @@ CANDIDATE_PAYLOAD_JS = r"""
     title: document.title,
     body: expandedBody,
     headings,
+    recoveredCandidateName,
     resumeText: resumeText.slice(0, 180000),
     resumeLinks,
     downloaded,
@@ -4829,15 +4939,41 @@ def build_candidate_payload_js(entry):
     )
 
 
+INVALID_ROLES = {
+    "the position", "position", "job", "jobs", "the job",
+    "day", "days", "today", "yesterday", "month", "months",
+    "year", "years", "ago", "all", "new", "matches",
+    "with", "in a", "role", "unknown", "candidates", "manage candidates"
+}
+
+
+def _is_invalid_job_title(val):
+    if not val:
+        return True
+    low = val.lower().strip()
+    if low in INVALID_ROLES:
+        return True
+    if re.fullmatch(r"(?:\d+\s+)?(?:day|days|month|months|year|years)\s+ago", low):
+        return True
+    if low.startswith(("with ", "in a ", "applied with", "applied to")):
+        return True
+    return False
+
+
 def _job_title_from_context(context_text):
     """
     Read the job directly from the Indeed candidate-list row.
-
-    Live examples:
-      Applied to: Purchase Executive
-      Applied to: Marketing & Lead Coordination Executive
     """
     text = context_text or ""
+
+    # Direct core role match in context
+    low_text = text.lower()
+    if "purchase executive" in low_text:
+        return "Purchase Executive"
+    if "marketing" in low_text and ("lead" in low_text or "coordination" in low_text or "executive" in low_text):
+        return "Marketing & Lead Coordination Executive"
+    if "driver" in low_text and "electrician" in low_text:
+        return "Driver cum Electrician – Technical Support Assistant"
 
     patterns = [
         r"(?im)^\s*applied\s+to\s*:\s*(.{2,160})$",
@@ -4852,7 +4988,7 @@ def _job_title_from_context(context_text):
             continue
 
         value = re.sub(r"\s+", " ", m.group(1)).strip(" |•·–—-")
-        if value:
+        if value and not _is_invalid_job_title(value):
             return value[:160]
 
     # Fallback for wrapped row text.
@@ -4864,7 +5000,7 @@ def _job_title_from_context(context_text):
     )
     if m:
         value = re.sub(r"\s+", " ", m.group(1)).strip(" |•·–—-")
-        if value:
+        if value and not _is_invalid_job_title(value):
             return value[:160]
 
     return None
@@ -4872,6 +5008,14 @@ def _job_title_from_context(context_text):
 
 def _job_title_from_body(body):
     text = body or ""
+
+    low_text = text.lower()
+    if "purchase executive" in low_text:
+        return "Purchase Executive"
+    if "marketing" in low_text and ("lead" in low_text or "coordination" in low_text or "executive" in low_text):
+        return "Marketing & Lead Coordination Executive"
+    if "driver" in low_text and "electrician" in low_text:
+        return "Driver cum Electrician – Technical Support Assistant"
 
     patterns = [
         r"(?im)^\s*applied\s+to\s*:?\s*(.{2,160})$",
@@ -4885,9 +5029,7 @@ def _job_title_from_body(body):
         m = re.search(pat, text)
         if m:
             value = re.sub(r"\s+", " ", m.group(1)).strip(" |•·–—-")
-            if value and value.lower() not in {
-                "the position","position","job","jobs"
-            }:
+            if value and not _is_invalid_job_title(value):
                 return value[:160]
 
     lines = [
@@ -4899,7 +5041,7 @@ def _job_title_from_body(body):
     for i, line in enumerate(lines):
         if re.fullmatch(r"(?i)applied\s+to\s*:?", line) and i + 1 < len(lines):
             value = lines[i + 1].strip(" |•·–—-")
-            if value:
+            if value and not _is_invalid_job_title(value):
                 return value[:160]
 
     return "the position"
@@ -5172,13 +5314,23 @@ def detect_candidates_page():
     """
     Search every Indeed page for the real Manage candidates workspace.
 
-    Permission-denied chooser pages are detected explicitly so the system can
-    keep role discovery alive without producing hundreds of scan errors.
+    Permission-denied chooser pages and Cloudflare challenge pages are detected
+    explicitly so the system can wait/recover safely without producing errors.
     """
     c = get_shared_chrome()
     targets = c.targets()
     candidates = []
     permission_issues = []
+
+    # Check for Cloudflare Turnstile challenge page first
+    for target in targets:
+        u = (target.get("url") or "").lower()
+        t = (target.get("title") or "").lower()
+        if "indeed." in u and ("just a moment..." in t or "checking your browser" in t):
+            raise IndeedChallengeError(
+                "Indeed is displaying a Cloudflare security verification page ('Just a moment...'). "
+                "Please solve the verification challenge in the Recruitment Chrome browser."
+            )
 
     for target in targets:
         url = target.get("url") or ""
@@ -5262,6 +5414,9 @@ def _looks_like_candidates_page(url, title, body_preview=""):
     low_body = (body_preview or "").lower()
 
     if "/login" in low_url:
+        return False
+
+    if "just a moment..." in low_title or "turnstile" in low_body or "checking if the site connection is secure" in low_body:
         return False
 
     # CRITICAL: Hosted_Candidate in a permission URL contains the word
@@ -5895,17 +6050,18 @@ def scan_existing_chrome(fast_only=False):
                 resume_found = bool(resume_download or resume_path or resume_text)
 
                 headings = payload.get("headings") or []
+                recovered_from_drawer = _usable_candidate_name(payload.get("recoveredCandidateName"))
 
                 candidate_name = _usable_candidate_name(label)
-                if not candidate_name:
-                    for heading in headings:
-                        candidate_name = _usable_candidate_name(heading)
-                        if candidate_name:
-                            break
+                if not candidate_name or candidate_name.lower() in GENERIC_CANDIDATE_LABELS:
+                    if recovered_from_drawer:
+                        candidate_name = recovered_from_drawer
+                    else:
+                        for heading in headings:
+                            candidate_name = _usable_candidate_name(heading)
+                            if candidate_name and candidate_name.lower() not in GENERIC_CANDIDATE_LABELS:
+                                break
 
-                # Never promote an Indeed action/button label into a person.
-                # "Candidate" deliberately fails automation.py identity checks and
-                # keeps the row in NEEDS_REVIEW until a real name is recovered.
                 if not candidate_name:
                     candidate_name = "Candidate"
 
@@ -5922,26 +6078,22 @@ def scan_existing_chrome(fast_only=False):
                     (
                         x for x in browser_jobs
                         if x
-                        and x.lower() not in {
-                            "the position","position","job","jobs",
-                            "candidates","manage candidates"
-                        }
+                        and not _is_invalid_job_title(x)
                     ),
                     None,
                 )
 
-                final_job = (
-                    row_job
-                    if row_job and row_job != "the position"
-                    else (
-                        browser_job
-                        or (
-                            detail_job
-                            if detail_job and detail_job != "the position"
-                            else "the position"
-                        )
-                    )
-                )
+                invalid_jobs = {
+                    "the position", "position", "job", "jobs",
+                    "candidates", "manage candidates", "day", "days",
+                    "with", "in a", "role", "unknown"
+                }
+
+                clean_row_job = row_job if row_job and row_job.lower() not in invalid_jobs else None
+                clean_browser_job = browser_job if browser_job and browser_job.lower() not in invalid_jobs else None
+                clean_detail_job = detail_job if detail_job and detail_job.lower() not in invalid_jobs else None
+
+                final_job = clean_row_job or clean_browser_job or clean_detail_job or "the position"
 
                 results.append({
                     "source_key": source_key,

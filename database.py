@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -984,7 +984,7 @@ def list_ready_to_send(limit=None):
               'indeed_candidate_contact_verified'
           )
           AND lower(trim(COALESCE(job_title,'')))
-              NOT IN ('','the position','position')
+              NOT IN ('','the position','position','job','the job','unknown','day','days','with','in a')
           AND lower(trim(COALESCE(candidate_name,'')))
               NOT IN (
                   '', 'candidate', 'download cv', 'download resume',
@@ -1063,10 +1063,24 @@ def claim_application_for_send(source_key):
             }
 
         job = (app.get("job_title") or "").strip().lower()
-        if job in {"", "the position", "position", "job", "the job", "unknown"}:
+        if job in {
+            "", "the position", "position", "job", "the job", "unknown",
+            "day", "days", "with", "in a",
+        }:
             c.execute("COMMIT")
             return {
                 "status": "role_not_verified",
+                "application": app,
+            }
+
+        name = (app.get("candidate_name") or "").strip().lower()
+        if name in {
+            "", "candidate", "download cv", "download resume",
+            "core skills", "resume", "education", "yes", "no",
+        }:
+            c.execute("COMMIT")
+            return {
+                "status": "candidate_name_not_verified",
                 "application": app,
             }
 

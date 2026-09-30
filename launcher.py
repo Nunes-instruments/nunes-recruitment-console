@@ -183,7 +183,7 @@ def open_ui():
 
         # Explicit Chrome profile prevents the profile chooser. Edge does not
         # use Chrome's profile-directory naming, so this is Chrome-only.
-        if "chrome.exe" in browser.name.lower():
+        if "chrome.exe" in str(browser).lower():
             profile = last_used_chrome_profile()
             if profile:
                 args.append(

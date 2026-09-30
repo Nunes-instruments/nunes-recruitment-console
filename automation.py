@@ -26,6 +26,7 @@ from recruitment_pipeline import (
 )
 from database import (
     log,
+    conn,
     upsert_application,
     get_by_source_key,
     update_send,
@@ -485,18 +486,35 @@ def first_phone(text):
     return m.group(0) if m else None
 
 def name_from_resume(text):
-    lines = [re.sub(r'\s+',' ',x).strip(" |-") for x in (text or "").splitlines()]
-    for line in lines[:15]:
-        if not 3 <= len(line) <= 65:
+    if not text:
+        return None
+    lines = [re.sub(r'\s+', ' ', x).strip(" |:-•\t") for x in (text or "").splitlines()]
+    for line in lines[:25]:
+        if not 2 <= len(line) <= 50:
             continue
         low = line.lower()
-        if any(x in low for x in ["resume","curriculum","vitae","email","phone","mobile","objective","profile","summary"]):
+        if any(x in low for x in [
+            "cv", "download", "resume", "curriculum", "vitae", "email",
+            "phone", "mobile", "objective", "profile", "summary", "career",
+            "candidate", "applicant", "declaration", "personal details", "about",
+            "contact", "skills", "experience", "education", "college", "institute",
+            "university", "school", "qualification", "bba", "mba", "be", "btech",
+            "b.tech", "b.e", "b.sc", "bsc", "b.com", "bcom", "street", "road", "nagar",
+            "coimbatore", "madurai", "chennai", "bangalore", "salem", "trichy",
+            "tamil nadu", "tamilnadu", "india", "solving", "hands", "hobbies", "languages",
+            "work history", "project", "details", "engineer", "executive", "officer"
+        ]):
             continue
         if EMAIL_RE.search(line) or any(ch.isdigit() for ch in line):
             continue
+        # Handle spaced single letters (e.g. "K E E R T H I K A" -> "Keerthika")
         parts = line.split()
-        if 1 <= len(parts) <= 5 and all(re.match(r"^[A-Za-z][A-Za-z.'-]*$",x) for x in parts):
-            return line.title()
+        if len(parts) > 3 and all(len(p) == 1 for p in parts):
+            line = "".join(parts)
+            parts = [line]
+        if 1 <= len(parts) <= 5 and all(re.match(r"^[A-Za-z][A-Za-z.'-]*$", x) for x in parts):
+            if any(len(p) >= 2 for p in parts) and line.lower() not in INVALID_CANDIDATE_NAMES:
+                return line.title()
     return None
 
 def local_ai_extract(resume_text, settings):
@@ -558,52 +576,33 @@ def first_verified_profile_phone(values):
 
 
 INVALID_CANDIDATE_NAMES = {
-    "all open and paused jobs",
-    "all jobs",
-    "jobs",
-    "job",
-    "education",
-    "yes",
-    "no",
-    "candidates",
-    "candidate",
-    "applicants",
-    "applicant",
-    "activity",
-    "interest",
-    "matches",
-    "matches to job post",
-    "manage candidates",
-    "find candidates",
-    "download cv",
-    "download resume",
-    "core skills",
-    "resume",
-    "contact information",
+    "all open and paused jobs", "all jobs", "jobs", "job", "education", "yes", "no",
+    "candidates", "candidate", "applicants", "applicant", "activity", "interest",
+    "matches", "matches to job post", "manage candidates", "find candidates",
+    "download cv", "download resume", "core skills", "resume", "contact information",
+    "curriculum vitae", "cv", "career", "career objective", "objective", "summary",
+    "profile", "profile summary", "coimbatore", "madurai", "chennai", "bangalore",
+    "salem", "trichy", "tamil nadu", "tamilnadu", "india", "solving. hands",
+    "hands-on", "upload your resume", "applied today", "applied yesterday"
 }
 
 
-def plausible_candidate_name(value):
+def plausible_candidate_name(value, allow_generic_candidate=False):
     name = re.sub(r"\s+", " ", str(value or "")).strip()
     low = name.lower()
 
-    if not name or len(name) < 2 or len(name) > 100:
+    if not name or len(name) < 2 or len(name) > 60:
         return False
 
     if low in INVALID_CANDIDATE_NAMES:
         return False
 
-    if low.startswith(
-        (
-            "all open",
-            "all applications",
-            "your job",
-            "job title",
-            "sort by",
-            "filter",
-        )
-    ):
-        return False
+    if allow_generic_candidate and low in {"candidate", "applicant"}:
+        return True
+
+    for bad in ("all open", "all applications", "your job", "job title", "sort by", "filter", "download", "applied"):
+        if low.startswith(bad):
+            return False
 
     if not re.search(r"[A-Za-z]", name):
         return False
@@ -620,7 +619,8 @@ def meaningful_job_title(value):
         and low not in {
             "the position", "position", "job", "the job", "unknown",
             "day", "days", "today", "yesterday", "month", "months",
-            "year", "years", "ago", "all", "new", "matches"
+            "year", "years", "ago", "all", "new", "matches",
+            "with", "in a"
         }
         and not re.fullmatch(r"(?:\d+\s+)?(?:day|days|month|months|year|years)\s+ago", low)
     )
@@ -637,7 +637,7 @@ def process_indeed_results(results):
             continue
 
         raw_name = item.get("candidate_name") or ""
-        if not plausible_candidate_name(raw_name):
+        if not plausible_candidate_name(raw_name, allow_generic_candidate=True):
             log(
                 "WARN",
                 f"Skipped non-candidate Indeed UI row: {raw_name!r}"
@@ -662,12 +662,30 @@ def process_indeed_results(results):
             else {}
         )
 
-        candidate_name_hint = (
-            name_from_resume(resume_text)
-            or (ai.get("candidate_name") if ai else None)
-            or item.get("candidate_name")
-            or "Candidate"
-        )
+        # Name resolution precedence:
+        # 1. Drawer heading recovered during live inspection
+        # 2. Name parsed from resume text
+        # 3. AI-extracted candidate name
+        # 4. Clean raw name (stripping any email prefixes like 'email - Name')
+        drawer_name = item.get("recovered_candidate_name") or ""
+        resume_name = name_from_resume(resume_text) if resume_text else ""
+        ai_name = (ai.get("candidate_name") if ai else "") or ""
+        clean_raw = re.sub(
+            r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\s*[-–:]\s*",
+            "",
+            raw_name,
+        ).strip()
+
+        candidate_name = None
+        for cand in (drawer_name, resume_name, ai_name, clean_raw):
+            if cand and plausible_candidate_name(cand, allow_generic_candidate=False):
+                candidate_name = cand
+                break
+
+        if not candidate_name:
+            candidate_name = clean_raw or drawer_name or raw_name or "Candidate"
+
+        candidate_name_hint = candidate_name
 
         email_addr, email_source, email_verification = choose_candidate_email(
             item=item,
@@ -687,8 +705,6 @@ def process_indeed_results(results):
                 email_addr = ai_email
                 email_source = "indeed_resume_ai_verified"
                 email_verification = "VERIFIED_AI_LITERAL_RESUME_EMAIL"
-
-        candidate_name = candidate_name_hint
 
         phone = (
             first_phone(resume_text)
@@ -715,7 +731,7 @@ def process_indeed_results(results):
         application_checked_at = now() if application_verified else None
 
         # Production decision order:
-        # exact application -> verified email -> exact role -> send.
+        # exact application -> verified email -> exact role -> valid candidate name -> send.
         if not application_verified:
             extraction_status = "NEEDS_REVIEW_APPLICATION"
             send_status = "NOT_SENT"
@@ -723,7 +739,43 @@ def process_indeed_results(results):
                 "Waiting: exact Indeed application detail is not verified yet"
             )
 
-        elif email_addr and meaningful_job_title(job_title):
+        elif not email_addr:
+            if email_verification == "AMBIGUOUS_MULTIPLE_EMAILS":
+                extraction_status = "NEEDS_REVIEW_AMBIGUOUS_EMAIL"
+                send_status = "NOT_SENT"
+                decision_reason = (
+                    "Waiting: multiple candidate emails found; retry/review required"
+                )
+            elif item.get("resume_found") and not resume_text.strip():
+                extraction_status = "NEEDS_REVIEW_RESUME_NO_TEXT"
+                send_status = "NOT_SENT"
+                decision_reason = (
+                    "Waiting: resume was found but readable resume text is not available yet"
+                )
+            elif not item.get("resume_found"):
+                extraction_status = "NEEDS_REVIEW_NO_RESUME_FOUND"
+                send_status = "NOT_SENT"
+                decision_reason = "Waiting: candidate resume is not available yet"
+            else:
+                extraction_status = "NEEDS_REVIEW_NO_VERIFIED_EMAIL"
+                send_status = "NOT_SENT"
+                decision_reason = (
+                    "Waiting: no verified candidate email found yet; retry/review required"
+                )
+
+        elif not meaningful_job_title(job_title):
+            extraction_status = "NEEDS_REVIEW_ROLE"
+            send_status = "NOT_SENT"
+            decision_reason = "Waiting: exact applied role not verified yet"
+
+        elif not plausible_candidate_name(candidate_name, allow_generic_candidate=False):
+            extraction_status = "NEEDS_REVIEW_CANDIDATE_NAME"
+            send_status = "NOT_SENT"
+            decision_reason = (
+                "Waiting: valid candidate name could not be verified from application or resume"
+            )
+
+        else:
             extraction_status = "VERIFIED_EMAIL_AND_ROLE"
             candidate_status = re.sub(
                 r"\s+", " ", str(item.get("indeed_status") or "")
@@ -750,36 +802,6 @@ def process_indeed_results(results):
                     "Ready: application, candidate email and applied role verified"
                 )
                 ready += 1
-
-        elif email_addr and not meaningful_job_title(job_title):
-            extraction_status = "NEEDS_REVIEW_ROLE"
-            send_status = "NOT_SENT"
-            decision_reason = "Waiting: exact applied role not verified yet"
-
-        elif email_verification == "AMBIGUOUS_MULTIPLE_EMAILS":
-            extraction_status = "NEEDS_REVIEW_AMBIGUOUS_EMAIL"
-            send_status = "NOT_SENT"
-            decision_reason = (
-                "Waiting: multiple candidate emails found; retry/review required"
-            )
-        elif item.get("resume_found") and not resume_text.strip():
-            extraction_status = "NEEDS_REVIEW_RESUME_NO_TEXT"
-            send_status = "NOT_SENT"
-            decision_reason = (
-                "Waiting: resume was found but readable resume text is not available yet"
-            )
-
-        elif not item.get("resume_found"):
-            extraction_status = "NEEDS_REVIEW_NO_RESUME_FOUND"
-            send_status = "NOT_SENT"
-            decision_reason = "Waiting: candidate resume is not available yet"
-
-        else:
-            extraction_status = "NEEDS_REVIEW_NO_VERIFIED_EMAIL"
-            send_status = "NOT_SENT"
-            decision_reason = (
-                "Waiting: no verified candidate email found yet; retry/review required"
-            )
 
         row = {
             "source_key": source_key,
@@ -840,6 +862,135 @@ def process_indeed_results(results):
     )
 
     return {"processed": processed, "ready": ready}
+
+
+def repair_backlog_candidates():
+    """
+    Safely recovers and canonicalizes existing candidate applications in automation.db:
+    1. For candidates already sent in sent_responses ledger: sets DUPLICATE_SKIPPED.
+    2. Recovers real candidate names from resume_text_cache for candidates stuck with
+       'Download CV', 'Candidate', etc., or names prepended with email addresses.
+    3. Normalizes and canonicalizes job_title to company's active roles.
+    4. For candidates with verified email, canonical role, and clean candidate name:
+       promotes them to VERIFIED_EMAIL_AND_ROLE and READY.
+    Preserves all safety invariants and never sends to unverified or duplicate recipients.
+    """
+    settings = load_settings()
+    repaired_names = 0
+    repaired_roles = 0
+    promoted_ready = 0
+    marked_duplicates = 0
+
+    with conn() as c:
+        sent_emails = {
+            str(r[0]).strip().lower()
+            for r in c.execute(
+                "SELECT recipient_email FROM sent_responses WHERE recipient_email IS NOT NULL"
+            ).fetchall()
+            if r[0]
+        }
+
+        rows = c.execute(
+            """
+            SELECT *
+            FROM applications
+            WHERE candidate_email IS NOT NULL
+              AND trim(candidate_email) <> ''
+              AND COALESCE(send_status, 'NOT_SENT') IN ('NOT_SENT', 'WAITING', '')
+            """
+        ).fetchall()
+
+        for raw_app in rows:
+            app = dict(raw_app)
+            source_key = app["source_key"]
+            email = (app.get("candidate_email") or "").strip().lower()
+            if not valid_candidate_email(email, settings):
+                continue
+
+            # 1. Global deduplication against permanent response ledger
+            if email in sent_emails:
+                c.execute(
+                    """
+                    UPDATE applications
+                    SET send_status = 'DUPLICATE_SKIPPED',
+                        decision_reason = 'Skipped: acknowledgement already sent to this email address',
+                        updated_at = ?
+                    WHERE source_key = ?
+                    """,
+                    (now(), source_key),
+                )
+                marked_duplicates += 1
+                continue
+
+            # 2. Candidate name recovery and cleaning
+            orig_name = str(app.get("candidate_name") or "").strip()
+            clean_name = re.sub(
+                r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\s*[-–:]\s*",
+                "",
+                orig_name,
+            ).strip()
+
+            resume_cache = str(app.get("resume_text_cache") or "")
+            recovered_name = None
+            if not plausible_candidate_name(clean_name, allow_generic_candidate=False):
+                if resume_cache:
+                    n = name_from_resume(resume_cache)
+                    if n and plausible_candidate_name(n, allow_generic_candidate=False):
+                        recovered_name = n
+            elif clean_name != orig_name:
+                recovered_name = clean_name
+
+            final_name = recovered_name or clean_name or orig_name
+
+            # 3. Canonicalize role
+            orig_job = app.get("job_title") or ""
+            canon_job = canonical_active_role_title(orig_job) if orig_job else ""
+
+            # Check validity
+            has_valid_name = plausible_candidate_name(final_name, allow_generic_candidate=False)
+            has_valid_role = meaningful_job_title(canon_job)
+
+            updates = {}
+            if recovered_name and recovered_name != orig_name:
+                updates["candidate_name"] = final_name[:120]
+                repaired_names += 1
+            if canon_job and canon_job != orig_job:
+                updates["job_title"] = canon_job[:200]
+                repaired_roles += 1
+
+            if has_valid_name and has_valid_role:
+                updates["application_verified"] = 1
+                updates["extraction_status"] = "VERIFIED_EMAIL_AND_ROLE"
+                updates["send_status"] = "READY"
+                updates["decision_reason"] = "Ready: application, candidate email and applied role verified"
+                promoted_ready += 1
+            elif not has_valid_role and orig_job:
+                updates["extraction_status"] = "NEEDS_REVIEW_ROLE"
+                updates["decision_reason"] = "Waiting: exact applied role not verified yet"
+            elif not has_valid_name:
+                updates["extraction_status"] = "NEEDS_REVIEW_CANDIDATE_NAME"
+                updates["decision_reason"] = "Waiting: valid candidate name could not be verified from application or resume"
+
+            if updates:
+                set_clauses = ", ".join(f"{k} = ?" for k in updates.keys())
+                params = list(updates.values()) + [now(), source_key]
+                c.execute(
+                    f"UPDATE applications SET {set_clauses}, updated_at = ? WHERE source_key = ?",
+                    params,
+                )
+
+    log(
+        "INFO",
+        f"Backlog candidate repair completed: {marked_duplicates} duplicate(s) skipped, "
+        f"{repaired_names} name(s) recovered, {repaired_roles} role(s) canonicalized, "
+        f"{promoted_ready} promoted to READY.",
+    )
+    return {
+        "marked_duplicates": marked_duplicates,
+        "repaired_names": repaired_names,
+        "repaired_roles": repaired_roles,
+        "promoted_ready": promoted_ready,
+    }
 
 
 def send_all_ready():

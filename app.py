@@ -36,12 +36,14 @@ from database import (
     get_state,
     set_state,
     now,
+    list_ready_to_send,
 )
 from automation import (
     process_indeed_results,
     send_thank_you,
     send_all_ready,
     smtp_health_check,
+    repair_backlog_candidates,
 )
 from chrome_cdp import (
     chrome_status,
@@ -51,6 +53,7 @@ from chrome_cdp import (
     detect_candidates_page,
     ensure_candidates_page,
     IndeedCandidatePermissionError,
+    IndeedChallengeError,
     new_candidates_queue_url,
     all_candidates_queue_url,
     discover_employer_job_descriptions,
@@ -159,6 +162,10 @@ def ensure_runtime_schema():
             init_db()
             init_role_review_db()
             init_recruitment_pipeline_db()
+            try:
+                repair_backlog_candidates()
+            except Exception as repair_exc:
+                log("WARN", f"Backlog candidate repair deferred: {repair_exc}")
             _runtime_schema_ready = True
             _runtime_schema_error = None
             return True
@@ -717,7 +724,7 @@ def execute_monitor_check(fast_only=False):
         result = process_indeed_results(data.get("results", []))
 
         # Mail delivery has priority over ranking.
-        if result.get("ready", 0):
+        if result.get("ready", 0) or list_ready_to_send(limit=1):
             outbox_wake_event.set()
 
         try:
@@ -908,6 +915,17 @@ def background_loop():
                         "live_monitor_scan_mode",
                         "waiting_for_candidates",
                     )
+
+            except IndeedChallengeError as challenge_err:
+                set_state("live_monitor_scan_mode", "challenge_waiting")
+                set_state(
+                    "live_monitor_last_error",
+                    "Indeed verification/security challenge presented. Please complete it in Recruitment Chrome to continue.",
+                )
+                set_state("live_monitor_consecutive_failures", "0")
+                log("INFO", f"Indeed challenge detected: {challenge_err}. Waiting safely for page resolution...")
+                scan_wake_event.wait(timeout=10.0)
+                scan_wake_event.clear()
 
             except Exception as e:
                 previous_failures = int(
@@ -2758,11 +2776,14 @@ def api_recruitment_overview():
 def api_recruitment_approve(app_id):
     try:
         result = approve_candidate_for_interview(app_id)
+        dispatch_res = process_notifications_once(limit=5)
         pipeline_wake_event.set()
+        date_str = result.get('flow', {}).get('interview_date') or interview_schedule_preview().get('interview_date')
         return jsonify({
             "ok": True,
-            "message": f"HR approval saved. Interview email is queued for {result.get('flow', {}).get('interview_date') or interview_schedule_preview().get('interview_date')}.",
+            "message": f"HR approval saved. Interview invitation scheduled for {date_str} and notification sent.",
             **result,
+            "dispatch": dispatch_res,
         })
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400
@@ -2776,14 +2797,16 @@ def api_recruitment_approve_top():
             payload.get("job_title"),
             payload.get("count"),
         )
+        dispatch_res = process_notifications_once(limit=25)
         pipeline_wake_event.set()
         return jsonify({
             "ok": True,
             "message": (
                 f"HR approved the top {result.get('selected_count', 0)} candidate(s). "
-                f"Interview email is queued for {result.get('interview_date')}."
+                f"Interview emails dispatched for {result.get('interview_date')}."
             ),
             **result,
+            "dispatch": dispatch_res,
         })
     except Exception as exc:
         return jsonify({"ok": False, "message": str(exc)}), 400

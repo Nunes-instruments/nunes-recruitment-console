@@ -21,6 +21,7 @@ import {
   Users,
   X,
   XCircle,
+  MailCheck,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -171,6 +172,8 @@ export function RoleReview() {
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
+  const [actionType, setActionType] = useState<"mail" | "interview" | null>(null);
 
   const [detailCandidate, setDetailCandidate] =
     useState<ReviewApplicant | null>(null);
@@ -409,6 +412,47 @@ export function RoleReview() {
       setBusy(false);
     }
   }, [candidates, selectedIds, selectedRole, loadRole]);
+
+  const sendInitialMail = useCallback(
+    async (candidateId: number) => {
+      setActionLoadingId(candidateId);
+      setActionType("mail");
+      setMessage("");
+      try {
+        const res = await api(`/api/send/${candidateId}`, { method: "POST" });
+        setMessage(res?.message || "Initial thank-you acknowledgement email sent successfully.");
+        if (selectedRole) await loadRole(selectedRole);
+      } catch (err: any) {
+        setMessage(err instanceof Error ? err.message : String(err));
+      } finally {
+        setActionLoadingId(null);
+        setActionType(null);
+      }
+    },
+    [selectedRole, loadRole]
+  );
+
+  const approveSingleCandidate = useCallback(
+    async (candidateId: number) => {
+      setActionLoadingId(candidateId);
+      setActionType("interview");
+      setMessage("");
+      try {
+        const res = await api(`/api/recruitment/approve/${candidateId}`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        setMessage(res?.message || "HR approval saved and interview invitation sent.");
+        if (selectedRole) await loadRole(selectedRole);
+      } catch (err: any) {
+        setMessage(err instanceof Error ? err.message : String(err));
+      } finally {
+        setActionLoadingId(null);
+        setActionType(null);
+      }
+    },
+    [selectedRole, loadRole]
+  );
 
   return (
     <section className="rrxPage">
@@ -696,6 +740,7 @@ export function RoleReview() {
                     <th>HR Decision</th>
                     <th>Interview Status</th>
                     <th>Resume Preview</th>
+                    <th>Quick Actions</th>
                   </tr>
                 </thead>
 
@@ -852,6 +897,50 @@ export function RoleReview() {
                             <Eye />
                           </button>
                         </td>
+
+                        <td>
+                          <div className="rrxRowActions">
+                            {row.send_status === "SENT" ? (
+                              <span className="rrxBadgeSent" title="Initial thank-you acknowledgement email already sent">
+                                <MailCheck /> Sent
+                              </span>
+                            ) : row.candidate_email ? (
+                              <button
+                                type="button"
+                                className="rrxActionBtn mail"
+                                disabled={actionLoadingId === row.id || busy}
+                                onClick={() => sendInitialMail(row.id)}
+                                title="Send initial thank-you email"
+                              >
+                                <Mail />
+                                {actionLoadingId === row.id && actionType === "mail"
+                                  ? "Sending..."
+                                  : "Send Mail"}
+                              </button>
+                            ) : (
+                              <span className="rrxBadgeMuted">No Email</span>
+                            )}
+
+                            {approved ? (
+                              <span className="rrxBadgeApproved" title={`Interview on ${row.hr_flow?.interview_date || "next business day"}`}>
+                                <CheckCircle2 /> {row.hr_flow?.interview_date || "Approved"}
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="rrxActionBtn approve"
+                                disabled={actionLoadingId === row.id || busy || lifecycle === "CLOSED"}
+                                onClick={() => approveSingleCandidate(row.id)}
+                                title="Approve candidate for interview tomorrow & dispatch invitation"
+                              >
+                                <Check />
+                                {actionLoadingId === row.id && actionType === "interview"
+                                  ? "Approving..."
+                                  : "Approve Interview"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     );
                   })}
@@ -998,6 +1087,39 @@ export function RoleReview() {
             </div>
 
             <footer>
+              {detailCandidate.send_status !== "SENT" && detailCandidate.candidate_email && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={actionLoadingId === detailCandidate.id || busy}
+                  onClick={async () => {
+                    await sendInitialMail(detailCandidate.id);
+                    setDetailCandidate(null);
+                  }}
+                >
+                  <Mail />
+                  {actionLoadingId === detailCandidate.id && actionType === "mail"
+                    ? "Sending..."
+                    : "Send Thank-You Mail"}
+                </Button>
+              )}
+
+              {String(detailCandidate.hr_flow?.hr_status || "").toUpperCase() !== "APPROVED" && (
+                <Button
+                  type="button"
+                  disabled={actionLoadingId === detailCandidate.id || busy}
+                  onClick={async () => {
+                    await approveSingleCandidate(detailCandidate.id);
+                    setDetailCandidate(null);
+                  }}
+                >
+                  <Check />
+                  {actionLoadingId === detailCandidate.id && actionType === "interview"
+                    ? "Scheduling..."
+                    : "Approve Interview (Tomorrow)"}
+                </Button>
+              )}
+
               <Button
                 type="button"
                 variant="outline"
@@ -1883,6 +2005,99 @@ export function RoleReview() {
         .rrxInterview.sent {
           color: #11714b;
           background: #e5f7ef;
+        }
+
+        .rrxRowActions {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+
+        .rrxActionBtn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          height: 26px;
+          padding: 0 9px;
+          border-radius: 6px;
+          font-size: 8.8px;
+          font-weight: 700;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          border: 1px solid transparent;
+          white-space: nowrap;
+        }
+
+        .rrxActionBtn svg {
+          width: 12px;
+          height: 12px;
+        }
+
+        .rrxActionBtn.mail {
+          background: #eff6ff;
+          color: #2563eb;
+          border-color: #bfdbfe;
+        }
+
+        .rrxActionBtn.mail:hover:not(:disabled) {
+          background: #dbeafe;
+          border-color: #93c5fd;
+        }
+
+        .rrxActionBtn.approve {
+          background: #f0fdf4;
+          color: #16a34a;
+          border-color: #bbf7d0;
+        }
+
+        .rrxActionBtn.approve:hover:not(:disabled) {
+          background: #dcfce7;
+          border-color: #86efac;
+        }
+
+        .rrxActionBtn:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
+        .rrxBadgeSent {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 3px 7px;
+          border-radius: 999px;
+          background: #ecfdf5;
+          color: #059669;
+          border: 1px solid #a7f3d0;
+          font-size: 8px;
+          font-weight: 750;
+          white-space: nowrap;
+        }
+
+        .rrxBadgeApproved {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 3px 7px;
+          border-radius: 999px;
+          background: #eff6ff;
+          color: #1d4ed8;
+          border: 1px solid #bfdbfe;
+          font-size: 8px;
+          font-weight: 750;
+          white-space: nowrap;
+        }
+
+        .rrxBadgeMuted {
+          display: inline-flex;
+          align-items: center;
+          padding: 3px 6px;
+          border-radius: 999px;
+          background: #f3f4f6;
+          color: #9ca3af;
+          font-size: 8px;
+          white-space: nowrap;
         }
 
         .rrxResume {
