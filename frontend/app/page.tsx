@@ -603,7 +603,7 @@ const mailErrorSummary = (value?: string | null) => {
     return "Recipient rejected";
   }
 
-  return text.length > 72 ? `${text.slice(0, 69)}â€¦` : text;
+  return text.length > 72 ? `${text.slice(0, 69)}…` : text;
 };
 
 
@@ -614,8 +614,8 @@ const reviewLabel = (value?: string | null) => {
     VERIFIED_EMAIL_AND_ROLE: "Verified email + role",
     VERIFIED_EMAIL_FOUND: "Verified",
     NEEDS_REVIEW_APPLICATION: "Verifying application",
-    SKIPPED_NO_EMAIL_IN_RESUME: "Skipped Â· no email",
-    SKIPPED_AMBIGUOUS_EMAIL: "Skipped Â· ambiguous email",
+    SKIPPED_NO_EMAIL_IN_RESUME: "Skipped · no email",
+    SKIPPED_AMBIGUOUS_EMAIL: "Skipped · ambiguous email",
     NEEDS_REVIEW_ROLE: "Waiting for role",
     NEEDS_REVIEW_JOB_TITLE: "Waiting for role",
     NEEDS_REVIEW_NO_VERIFIED_EMAIL: "Waiting for verified email",
@@ -671,7 +671,7 @@ export default function Home() {
         setSettingsDraft(next.settings);
       }
       setNotice((current) =>
-        current?.tone === "error" && current.text.includes("Unable to load")
+        (current?.text?.includes("Backend starting") || (current?.tone === "error" && current.text.includes("Unable to load")))
           ? null
           : current
       );
@@ -1063,10 +1063,10 @@ export default function Home() {
     Boolean(settingsDraft.indeed_candidates_url);
 
   const rolePipelineRows = useMemo(() => {
-    return overviewRoles.slice(0, 6).map((role) => {
+    return overviewRoles.slice(0, 8).map((role) => {
       const databaseTotal = Number(role.active_applicant_count ?? role.applicant_count ?? 0);
       const indeedTotal = Number(role.candidate_total_hint || 0);
-      const total = Math.max(databaseTotal, indeedTotal);
+      const total = indeedTotal > 0 ? indeedTotal : databaseTotal;
       const newCount = Number(role.candidate_new_hint ?? role.actual_new_count ?? 0);
       return {
         ...role,
@@ -1081,10 +1081,9 @@ export default function Home() {
     });
   }, [overviewRoles]);
 
-  const indeedAllApplicants = Math.max(
-    Number(overviewIndeedCounts.all || 0),
-    Number(data.stats.total || 0),
-  );
+  const indeedAllApplicants = Number(overviewIndeedCounts.all || 0) > 0
+    ? Number(overviewIndeedCounts.all)
+    : Number(data.stats.total || 0);
   const indeedNewApplicants = Number(
     overviewIndeedCounts.new
     || data.live_detection?.detected_today
@@ -1192,7 +1191,7 @@ export default function Home() {
             <Input
               value={headerSearch}
               onChange={(event) => setHeaderSearch(event.target.value)}
-              placeholder="Search candidates, roles, or keywordsâ€¦"
+              placeholder="Search candidates, roles, or keywords…"
               aria-label="Search candidates"
             />
           </form>
@@ -1376,7 +1375,7 @@ export default function Home() {
                   <span className="opsPanelIcon teal"><BriefcaseBusiness /></span>
                   <div>
                     <h2>Current Indeed Roles</h2>
-                    <p>Live roles from Indeed Â· Open, Paused and Flagged</p>
+                    <p>Live roles from Indeed · Open, Paused and Flagged</p>
                   </div>
                 </div>
                 <Button size="sm" onClick={() => openRoleReview()}>
@@ -1513,7 +1512,7 @@ export default function Home() {
                   <span>Last detected</span>
                   <strong>{data.live_detection?.last_success_at ? relativeTime(data.live_detection.last_success_at) : "Waiting for first check"}</strong>
                   <small>{candidatePermissionMissing ? "Indeed is signed in and current roles stay live. Candidate access is waiting only for Manage candidates permission." : data.live_detection?.healthy ? "New applicants found automatically" : data.live_detection?.last_error || "Automatic reconnect is running"}</small>
-                  <Button type="button" variant="outline" size="sm" loading={busy === "open-indeed"} loadingText="Openingâ€¦" onClick={() => runAction("open-indeed", "/api/open-indeed", "Indeed opened in Chrome.")}>View on Indeed <ExternalLink /></Button>
+                  <Button type="button" variant="outline" size="sm" loading={busy === "open-indeed"} loadingText="Opening…" onClick={() => runAction("open-indeed", "/api/open-indeed", "Indeed opened in Chrome.")}>View on Indeed <ExternalLink /></Button>
                 </div>
 
                 {candidatePermissionMissing && (
@@ -1530,7 +1529,7 @@ export default function Home() {
                         variant="outline"
                         size="sm"
                         loading={busy === "indeed-safe-login"}
-                        loadingText="Openingâ€¦"
+                        loadingText="Opening…"
                         onClick={() =>
                           runAction(
                             "indeed-safe-login",
@@ -1546,7 +1545,7 @@ export default function Home() {
                         variant="outline"
                         size="sm"
                         loading={busy === "retry-candidate-access"}
-                        loadingText="Checkingâ€¦"
+                        loadingText="Checking…"
                         onClick={() =>
                           runAction(
                             "retry-candidate-access",
@@ -1573,7 +1572,7 @@ export default function Home() {
                         variant="warning"
                         size="sm"
                         loading={busy === "connect"}
-                        loadingText="Connectingâ€¦"
+                        loadingText="Connecting…"
                         onClick={() =>
                           runAction(
                             "connect",
@@ -1589,7 +1588,7 @@ export default function Home() {
                         variant="outline"
                         size="sm"
                         loading={busy === "indeed-safe-login"}
-                        loadingText="Opening safe loginâ€¦"
+                        loadingText="Opening safe login…"
                         onClick={() =>
                           runAction(
                             "indeed-safe-login",
@@ -1598,7 +1597,7 @@ export default function Home() {
                           )
                         }
                       >
-                        Safe Google Login Â· nuneslead@gmail.com
+                        Safe Google Login · nuneslead@gmail.com
                       </Button>
                     </div>
                   </div>
@@ -1626,7 +1625,7 @@ export default function Home() {
                         variant="outline"
                         size="sm"
                         loading={busy === "indeed-safe-login"}
-                        loadingText="Opening safe loginâ€¦"
+                        loadingText="Opening safe login…"
                         onClick={() =>
                           runAction(
                             "indeed-safe-login",
@@ -1655,7 +1654,7 @@ export default function Home() {
                     <span className="opsPanelIcon blue"><Settings2 /></span>
                     <div>
                       <h2>Candidate Processing</h2>
-                      <p>Verified email delivery Â· ranking runs separately</p>
+                      <p>Verified email delivery · ranking runs separately</p>
                     </div>
                   </div>
                   <span className={`servicePill ${candidatePermissionMissing ? "warning" : "ready"}`}><i /> {candidatePermissionMissing ? "Waiting for access" : "Processing"}</span>
@@ -1673,11 +1672,11 @@ export default function Home() {
                       const ranked = (row.analysis_status || "").toUpperCase() === "READY";
                       const sent = (row.send_status || "").toUpperCase() === "SENT";
                       const statusText = approved
-                        ? `HR approved${row.hr_flow?.interview_date ? ` Â· ${row.hr_flow.interview_date}` : ""}`
+                        ? `HR approved${row.hr_flow?.interview_date ? ` · ${row.hr_flow.interview_date}` : ""}`
                         : ranked
-                          ? `Resume ranking complete${row.rank_position ? ` Â· Rank #${row.rank_position}` : ""}${row.match_score !== null && row.match_score !== undefined ? ` Â· ${Number(row.match_score).toFixed(0)}%` : ""}`
+                          ? `Resume ranking complete${row.rank_position ? ` · Rank #${row.rank_position}` : ""}${row.match_score !== null && row.match_score !== undefined ? ` · ${Number(row.match_score).toFixed(0)}%` : ""}`
                           : sent
-                            ? "Acknowledgement sent Â· ranking pending"
+                            ? "Acknowledgement sent · ranking pending"
                             : reviewLabel(row.extraction_status);
                       return (
                         <div className="processingRow" key={row.id}>
@@ -1728,7 +1727,7 @@ export default function Home() {
               </div>
               <input
                 className="searchInput"
-                placeholder="Search candidates, jobs, emailâ€¦"
+                placeholder="Search candidates, jobs, email…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -1795,7 +1794,7 @@ export default function Home() {
                         ) ? (
                           row.job_title
                         ) : (
-                          <span className="pendingValue">Detecting roleâ€¦</span>
+                          <span className="pendingValue">Detecting role…</span>
                         )}
                       </td>
                       <td>
@@ -1804,7 +1803,7 @@ export default function Home() {
                             <span>{row.candidate_email}</span>
                           ) : (
                             <span className="pendingValue">
-                              Detecting verified emailâ€¦
+                              Detecting verified email…
                             </span>
                           )}
                           {row.resume_path && (

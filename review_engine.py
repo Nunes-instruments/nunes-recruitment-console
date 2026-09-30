@@ -550,6 +550,9 @@ def list_roles():
             """
             SELECT
                 rrs.job_title,
+                COALESCE(rrs.lifecycle_status, 'UNKNOWN') AS lifecycle_status,
+                COALESCE(rrs.candidate_total_hint, 0) AS candidate_total_hint,
+                COALESCE(rrs.candidate_new_hint, 0) AS candidate_new_hint,
                 COALESCE(rp.job_description,'') AS job_description,
                 COALESCE(rp.description_source,'') AS description_source,
                 COALESCE(rp.indeed_job_url, rrs.indeed_job_url) AS indeed_job_url,
@@ -578,10 +581,19 @@ def list_roles():
             WHERE upper(trim(COALESCE(rrs.lifecycle_status,'UNKNOWN')))
                   IN ('OPEN','PAUSED','FLAGGED')
             GROUP BY
-                rrs.job_title, rp.job_description, rp.description_source,
+                rrs.job_title, rrs.lifecycle_status, rrs.candidate_total_hint, rrs.candidate_new_hint,
+                rp.job_description, rp.description_source,
                 rp.indeed_job_url, rrs.indeed_job_url, rp.description_status,
                 rp.description_checked_at, rp.updated_at, rrs.updated_at
-            ORDER BY lower(rrs.job_title)
+            ORDER BY
+                CASE upper(trim(COALESCE(rrs.lifecycle_status,'UNKNOWN')))
+                    WHEN 'OPEN' THEN 0
+                    WHEN 'PAUSED' THEN 1
+                    WHEN 'FLAGGED' THEN 2
+                    ELSE 3
+                END,
+                COALESCE(rrs.candidate_total_hint, 0) DESC,
+                lower(rrs.job_title)
             """
         ).fetchall()
         return [dict(r) for r in rows]

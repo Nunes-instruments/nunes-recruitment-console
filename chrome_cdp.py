@@ -2682,6 +2682,10 @@ def discover_employer_job_descriptions(max_jobs=25):
 
         clean_rows = normalized_rows
 
+        if not clean_rows:
+            log("WARN", "Indeed job discovery returned 0 clean rows; preserving previous authoritative snapshot.")
+            return []
+
         # Persist one authoritative Jobs-page snapshot so overview/dashboard
         # code can use Indeed "All" / "New" rather than local processed counts.
         snapshot_payload = {

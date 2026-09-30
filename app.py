@@ -1394,7 +1394,10 @@ def _safe_int(value, default=0):
 
 
 def _normalized_role_title(value):
-    return " ".join(str(value or "").split()).strip().casefold()
+    s = str(value or "")
+    for char in ["\u2013", "\u2014", "\ufffd", "\u00e2\u20ac\u2013"]:
+        s = s.replace(char, "-")
+    return " ".join(s.split()).strip().casefold()
 
 
 def exact_indeed_jobs_snapshot():

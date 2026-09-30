@@ -35,6 +35,9 @@ type Role = {
   lifecycle_status?: string | null;
   applicant_count: number;
   active_applicant_count?: number;
+  candidate_total_hint?: number;
+  candidate_new_hint?: number;
+  candidate_total?: number;
   analyzed_count: number;
   waiting_count: number;
   auto_shortlisted_count: number;
@@ -470,7 +473,7 @@ export function RoleReview() {
             <div>
               <strong>{selectedRole || "Select role"}</strong>
               <span>
-                {role?.active_applicant_count ?? role?.applicant_count ?? 0} Applicants
+                {role?.candidate_total_hint ?? role?.candidate_total ?? role?.active_applicant_count ?? role?.applicant_count ?? 0} Applicants
               </span>
             </div>
             <ChevronDown />
@@ -489,7 +492,7 @@ export function RoleReview() {
             {visibleRoles.map((item) => {
               const active = item.job_title === selectedRole;
               const count =
-                item.active_applicant_count ?? item.applicant_count ?? 0;
+                item.candidate_total_hint ?? item.candidate_total ?? item.active_applicant_count ?? item.applicant_count ?? 0;
 
               return (
                 <button
@@ -548,16 +551,16 @@ export function RoleReview() {
               <article>
                 <Users />
                 <div>
-                  <strong>{role?.applicant_count || candidates.length || 0}</strong>
-                  <span>Total Applicants</span>
+                  <strong>{role?.candidate_total_hint ?? role?.candidate_total ?? role?.applicant_count ?? candidates.length ?? 0}</strong>
+                  <span>Indeed Total Applicants</span>
                 </div>
               </article>
 
               <article>
                 <Trophy />
                 <div>
-                  <strong>{payload?.ranking?.ranked || 0}</strong>
-                  <span>Ranking Complete</span>
+                  <strong>{payload?.ranking?.ranked || candidates.length || 0}</strong>
+                  <span>Processed & Ranked</span>
                 </div>
               </article>
 

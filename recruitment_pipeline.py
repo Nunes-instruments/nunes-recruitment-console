@@ -1797,7 +1797,7 @@ def operations_overview(limit_roles=6, limit_recent=8):
                     WHEN 'PAUSED' THEN 2
                     ELSE 3
                 END,
-                COUNT(a.id) DESC,
+                COALESCE(rrs.candidate_total_hint, 0) DESC,
                 lower(rrs.job_title)
             LIMIT ?
             """,
