@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "flask",
+  "functions": {"app.py": {"maxDuration": 60}},
+  "crons": [{"path": "/api/cron", "schedule": "30 3 * * *"}]
+}
