@@ -19,7 +19,7 @@ A standalone Vercel deployment in `recruitment-cloud/`. The existing Windows/Ind
 
 Import `Nunes-instruments/nunes-recruitment-console` into Vercel and set Root Directory to `recruitment-cloud`. Framework: Flask. The app uses the native Vercel Python runtime.
 
-Set these **encrypted environment variables** for Production and Preview, then redeploy:
+Set these **encrypted environment variables** for Production, then redeploy. Use separate test credentials and a separate database for Preview; never copy production candidate data or email credentials into preview deployments:
 
 | Variable | Purpose |
 | --- | --- |
